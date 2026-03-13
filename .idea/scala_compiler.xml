@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ScalaCompilerConfiguration">
+    <option name="separateProdTestSources" value="true" />
+    <profile name="sbt 1" modules="core,okapi,okapi-core,okapi-core.okapi-example,okapi-core.okapi-example.main,okapi-core.okapi-example.test,okapi-example,okapi.core,okapi.main,okapi.test,root,root.core,root.main,root.okapi-core,root.okapi-example,root.test" />
+    <profile name="sbt 2" modules="core.main,core.test,okapi-core.main,okapi-core.main~1,okapi-core.test,okapi-core.test~1,okapi-example.main,okapi-example.test,okapi.core.main,okapi.core.test,root.core.main,root.core.test,root.okapi-core.main,root.okapi-core.test,root.okapi-example.main,root.okapi-example.test">
+      <parameters>
+        <parameter value="-Xmax-inlines:128" />
+        <parameter value="-Yexplicit-nulls" />
+        <parameter value="-Yno-flexible-types" />
+        <parameter value="-Wsafe-init" />
+        <parameter value="-Wunused:all" />
+        <parameter value="-Wnonunit-statement" />
+        <parameter value="-explain" />
+        <parameter value="-explain-types" />
+        <parameter value="-no-indent" />
+      </parameters>
+    </profile>
+  </component>
+</project>
