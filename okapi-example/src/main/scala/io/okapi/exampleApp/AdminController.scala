@@ -1,8 +1,8 @@
-package com.okapi.exampleApp
+package io.okapi.exampleApp
 
 import zio.json.JsonCodec
 
-import com.okapi.core.annotations.{ Controller, Get, Query, Summary, Tag }
+import io.okapi.core.annotations.{ Controller, Get, Query, Summary, Tag }
 
 final case class AdminStatusDto(area: String, enabled: Boolean) derives JsonCodec
 

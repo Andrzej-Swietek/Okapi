@@ -1,14 +1,12 @@
-package com.okapi.exampleApp
+package io.okapi.exampleApp
 
 import zio.*
 import zio.http.{ Response as ZioHttpResponse, Routes, Server }
 import zio.json.JsonCodec
 
-import com.okapi.core.annotations.{ Controller, Get, Post, Query, Path, Header, RequestBody, Produces, Consumes, Description, Summary, Tag }
-import com.okapi.core.http.ApiError
-import com.okapi.core.Okapi
-import sttp.tapir.server.ziohttp.ZioHttpInterpreter
-import sttp.tapir.swagger.bundle.SwaggerInterpreter
+import io.okapi.core.annotations.{ Controller, Get, Post, Query, Path, Header, RequestBody, Produces, Consumes, Description, Summary, Tag }
+import io.okapi.core.http.ApiError
+import io.okapi.core.Okapi
 
 final case class StatusDto(ok: Boolean, message: String) derives JsonCodec
 
@@ -48,38 +46,28 @@ final class ExampleController {
 
 object Main extends ZIOAppDefault {
 
+  private type Controllers = (ExampleController, AdminController)
+
   private val defaultPort = 38081
 
   private val serverPort =
     sys.env.get("OKAPI_EXAMPLE_PORT").flatMap(_.toIntOption).getOrElse(defaultPort)
 
-  private val exampleRoutes: Routes[ExampleController, ZioHttpResponse] =
-    Okapi.httpRoutes[ExampleController]
-
-  private val adminRoutes: Routes[AdminController, ZioHttpResponse] =
-    Okapi.httpRoutes[AdminController]
-
-  private val apiRoutes: Routes[ExampleController & AdminController, ZioHttpResponse] =
-    exampleRoutes ++ adminRoutes
-
-  private val allPublicEndpoints =
-    Okapi.endpoints[ExampleController].map(_.endpoint) ++
-      Okapi.endpoints[AdminController].map(_.endpoint)
+  private val apiRoutes: Routes[Okapi.Environment[Controllers], ZioHttpResponse] =
+    Okapi.routes[Controllers]
 
   private val swagger: Routes[Any, ZioHttpResponse] =
-    ZioHttpInterpreter().toHttp(
-      SwaggerInterpreter().fromEndpoints[Task](allPublicEndpoints, "Okapi Example API", "0.0.1")
-    )
+    Okapi.swagger[Controllers]("Okapi Example API", "0.0.1")
 
   private val app = apiRoutes ++ swagger
 
   override def run: ZIO[Any, Throwable, Unit] =
-    Server
-      .serve(app)
-      .provide(
-        ZLayer.succeed(Server.Config.default.port(serverPort)),
-        Server.live,
-        ZLayer.succeed(new ExampleController),
-        ZLayer.succeed(new AdminController),
-      )
+    Okapi.registerOkapiControllers[Controllers](
+      Server
+        .serve(app)
+        .provideSome[Okapi.Environment[Controllers]](
+          ZLayer.succeed(Server.Config.default.port(serverPort)),
+          Server.live,
+        ),
+    )
 }

@@ -1,4 +1,4 @@
-package com.okapi.core.utils
+package io.okapi.core.utils
 
 import java.util.UUID
 

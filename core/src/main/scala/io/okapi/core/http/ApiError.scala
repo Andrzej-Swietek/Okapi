@@ -1,4 +1,4 @@
-package com.okapi.core
+package io.okapi.core
 package http
 
 import zio.json.*

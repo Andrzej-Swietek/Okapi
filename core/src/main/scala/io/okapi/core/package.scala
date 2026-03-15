@@ -1,4 +1,4 @@
-package com.okapi
+package io.okapi
 
 import scala.collection.convert.AsScalaExtensions
 

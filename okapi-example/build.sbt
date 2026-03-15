@@ -1,4 +1,4 @@
-ThisBuild / organization := "com.okapi.example"
+ThisBuild / organization := "io.okapi.example"
 ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "3.6.4"
 
@@ -13,10 +13,10 @@ val zioConfigVersion = "4.0.0"
 lazy val example = (project in file("."))
   .settings(
     name := "okapi-example",
-    Compile / mainClass := Some("com.okapi.exampleApp.Main"),
-    Compile / discoveredMainClasses := Seq("com.okapi.exampleApp.Main"),
+    Compile / mainClass := Some("io.okapi.exampleApp.Main"),
+    Compile / discoveredMainClasses := Seq("io.okapi.exampleApp.Main"),
     libraryDependencies ++= Seq(
-      "com.okapi" %% "core" % okapiVersion,
+      "io.okapi" %% "core" % okapiVersion,
       "dev.zio" %% "zio" % zioVersion,
       "dev.zio" %% "zio-http" % zioHttpVersion,
       "dev.zio" %% "zio-json" % zioJsonVersion,

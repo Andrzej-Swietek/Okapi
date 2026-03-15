@@ -1,4 +1,4 @@
-package com.okapi.core
+package io.okapi.core
 package annotations
 
 import scala.annotation.{ experimental, StaticAnnotation }
@@ -24,3 +24,5 @@ final class Consumes(val mediaType: String = "application/json") extends StaticA
 
 final class Description(val text: String) extends StaticAnnotation
 final class Summary(val text: String) extends StaticAnnotation
+
+final class Service(val text: String) extends StaticAnnotation

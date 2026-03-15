@@ -1,9 +1,9 @@
-package com.okapi.core.macros
+package io.okapi.core.macros
 
-import com.okapi.core.annotations.*
-import com.okapi.core.http.ApiError
-import com.okapi.core.http.ApiError.ApiErrorResponse
-import com.okapi.core.OkapiRuntime
+import io.okapi.core.annotations.*
+import io.okapi.core.http.ApiError
+import io.okapi.core.http.ApiError.ApiErrorResponse
+import io.okapi.core.OkapiRuntime
 import scala.quoted.*
 import sttp.tapir.*
 import sttp.tapir.json.zio.*
@@ -36,6 +36,16 @@ private[okapi] object AnnotationProcessor {
       httpRoutesImpl[T]
     }
 
+  transparent inline def controllerLayers[Types <: Tuple] =
+    ${
+      controllerLayersImpl[Types]
+    }
+
+  transparent inline def serviceLayers[Types <: Tuple] =
+    ${
+      controllerLayersImpl[Types]
+    }
+
   private def swaggerRoutesImpl[T: Type](
     title: Expr[String],
     version: Expr[String],
@@ -56,6 +66,45 @@ private[okapi] object AnnotationProcessor {
           .asInstanceOf[List[ZServerEndpoint[T, sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets]]]
         )
     }
+
+  private def controllerLayersImpl[Types: Type](using q: Quotes): Expr[Any] = {
+    import q.reflect.*
+
+    def tupleElements(tpe: TypeRepr): List[TypeRepr] = {
+      val normalized = tpe.dealias
+      normalized match {
+        case applied @ AppliedType(_, List(head, tail)) if applied.typeSymbol.fullName == "scala.*:" =>
+          head :: tupleElements(tail)
+        case AppliedType(_, args) if normalized.typeSymbol.fullName.startsWith("scala.Tuple") =>
+          args
+        case empty if empty =:= TypeRepr.of[EmptyTuple] =>
+          Nil
+        case other =>
+          report.throwError(s"Expected a tuple of types, got: ${other.show}")
+      }
+    }
+
+    def deriveLayer(target: TypeRepr): Expr[ZLayer[?, Any, ?]] =
+      target.asType match {
+        case '[t] => '{ ZLayer.derive[t] }.asExprOf[ZLayer[?, Any, ?]]
+      }
+
+    def combinedOutput(types: List[TypeRepr]): TypeRepr =
+      types.reduceLeftOption[TypeRepr](AndType.apply).getOrElse(TypeRepr.of[Any])
+
+    tupleElements(TypeRepr.of[Types]) match {
+      case Nil =>
+        '{ ZLayer.empty }
+      case head :: tail =>
+        combinedOutput(head :: tail).asType match {
+          case '[output] =>
+            val layers = (head :: tail).map(deriveLayer)
+            '{
+              ZLayer.make[output].apply[Any](${ Varargs(layers) }*)
+            }
+        }
+    }
+  }
 
   private[core] def pathInput[T](
     name: String,
@@ -190,7 +239,7 @@ private[okapi] object AnnotationProcessor {
     }
 
     val helper = TypeApply(
-          Select.unique(Ref(Symbol.requiredModule("com.okapi.core.OkapiRuntime")), "attachServerLogic"),
+          Select.unique(Ref(Symbol.requiredModule("io.okapi.core.OkapiRuntime")), "attachServerLogic"),
       List(
         Inferred(TypeRepr.of[T]),
         Inferred(inputType),
@@ -246,7 +295,7 @@ private[okapi] object AnnotationProcessor {
         )
 
         val helper = TypeApply(
-          Select.unique(Ref(Symbol.requiredModule("com.okapi.core.OkapiRuntime")), "serviceWithMappedZio"),
+          Select.unique(Ref(Symbol.requiredModule("io.okapi.core.OkapiRuntime")), "serviceWithMappedZio"),
           List(Inferred(controllerTpe), Inferred(successType)),
         )
 
@@ -312,7 +361,7 @@ private[okapi] object AnnotationProcessor {
 
     Apply(
       TypeApply(
-        Select.unique(Ref(Symbol.requiredModule("com.okapi.core.OkapiRuntime")), "liftPure"),
+        Select.unique(Ref(Symbol.requiredModule("io.okapi.core.OkapiRuntime")), "liftPure"),
         List(Inferred(outputType)),
       ),
       List(term),
@@ -326,7 +375,7 @@ private[okapi] object AnnotationProcessor {
     import q.reflect.*
 
     val helper = TypeApply(
-      Select.unique(Ref(Symbol.requiredModule("com.okapi.core.OkapiRuntime")), "mapApiErrorEffect"),
+      Select.unique(Ref(Symbol.requiredModule("io.okapi.core.OkapiRuntime")), "mapApiErrorEffect"),
       List(Inferred(TypeRepr.of[Any]), Inferred(successType)),
     )
 
@@ -489,7 +538,7 @@ private[okapi] object AnnotationProcessor {
         val combinedInput = concatValueTypes(currentInput, nextInput)
         val concat = summonParamConcat(currentInput, transputValueType(argument.tpe))
         val helper = TypeApply(
-          Select.unique(Ref(Symbol.requiredModule("com.okapi.core.OkapiRuntime")), "addInput"),
+          Select.unique(Ref(Symbol.requiredModule("io.okapi.core.OkapiRuntime")), "addInput"),
           List(
             Inferred(securityInput),
             Inferred(currentInput),
@@ -507,7 +556,7 @@ private[okapi] object AnnotationProcessor {
         val combinedOutput = concatValueTypes(currentOutput, nextOutput)
         val concat = summonParamConcat(currentOutput, nextOutput)
         val helper = TypeApply(
-          Select.unique(Ref(Symbol.requiredModule("com.okapi.core.OkapiRuntime")), "addOutput"),
+          Select.unique(Ref(Symbol.requiredModule("io.okapi.core.OkapiRuntime")), "addOutput"),
           List(
             Inferred(securityInput),
             Inferred(input),
@@ -525,7 +574,7 @@ private[okapi] object AnnotationProcessor {
         val combinedErrorOutput = concatValueTypes(currentErrorOutput, nextErrorOutput)
         val concat = summonParamConcat(currentErrorOutput, nextErrorOutput)
         val helper = TypeApply(
-          Select.unique(Ref(Symbol.requiredModule("com.okapi.core.OkapiRuntime")), "addErrorOutput"),
+          Select.unique(Ref(Symbol.requiredModule("io.okapi.core.OkapiRuntime")), "addErrorOutput"),
           List(
             Inferred(securityInput),
             Inferred(input),

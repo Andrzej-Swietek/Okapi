@@ -1,12 +1,10 @@
-package com.okapi.core
+package io.okapi.core
 
-import com.okapi.core.http.ApiError
-import com.okapi.core.http.ApiError.ApiErrorResponse
-
+import io.okapi.core.http.ApiError
+import io.okapi.core.http.ApiError.ApiErrorResponse
 import sttp.tapir.*
 import sttp.tapir.ztapir.*
 import zio.*
-import zio.http.{ Response, Routes }
 
 object OkapiRuntime {
 

@@ -1,4 +1,4 @@
-package com.okapi.core
+package io.okapi.core
 package annotations
 
 case class ParameterInfo(

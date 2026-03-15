@@ -1,4 +1,4 @@
-ThisBuild / organization := "com.okapi"
+ThisBuild / organization := "io.okapi"
 ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "3.6.4"
 
