@@ -106,6 +106,81 @@ private[okapi] object AnnotationProcessor {
     }
   }
 
+  inline def autoLayer[Types <: Tuple]: Any =
+    ${ autoLayerImpl[Types] }
+
+  private def autoLayerImpl[Types: Type](using q: Quotes): Expr[Any] = {
+    import q.reflect.*
+
+    def tupleElements(tpe: TypeRepr): List[TypeRepr] = {
+      val normalized = tpe.dealias
+      normalized match {
+        case applied @ AppliedType(_, List(head, tail)) if applied.typeSymbol.fullName == "scala.*:" =>
+          head :: tupleElements(tail)
+        case AppliedType(_, args) if normalized.typeSymbol.fullName.startsWith("scala.Tuple") =>
+          args
+        case empty if empty =:= TypeRepr.of[EmptyTuple] =>
+          Nil
+        case other =>
+          report.throwError(s"Expected a tuple of types, got: ${other.show}")
+      }
+    }
+
+    def isBuiltIn(sym: Symbol): Boolean =
+      !sym.isClassDef || {
+        val name = sym.fullName
+        name.startsWith("scala.") ||
+        name.startsWith("java.") ||
+        name.startsWith("zio.") ||
+        name.startsWith("sttp.")
+      }
+
+    val visited = scala.collection.mutable.LinkedHashSet.empty[Symbol]
+    val allDeps = scala.collection.mutable.ListBuffer.empty[TypeRepr]
+
+    def discoverDeps(tpe: TypeRepr): Unit = {
+      val sym = tpe.dealias.typeSymbol
+      if (sym == Symbol.noSymbol || visited.contains(sym) || isBuiltIn(sym)) return
+      visited += sym
+
+      val ctor = sym.primaryConstructor
+      if (ctor != Symbol.noSymbol) {
+        ctor.paramSymss
+          .filter(grp => grp.headOption.forall(p => !p.flags.is(Flags.Given) && !p.flags.is(Flags.Implicit)))
+          .flatten
+          .foreach { p =>
+            val pt = p.tree match {
+              case vd: ValDef => vd.tpt.tpe
+              case _          => p.termRef.widen
+            }
+            discoverDeps(pt)
+          }
+      }
+
+      allDeps += tpe.dealias
+    }
+
+    val controllerTypes = tupleElements(TypeRepr.of[Types])
+    if (controllerTypes.isEmpty) return '{ ZLayer.empty }
+
+    controllerTypes.foreach(discoverDeps)
+
+    def deriveLayer(t: TypeRepr): Expr[ZLayer[?, Any, ?]] =
+      t.asType match {
+        case '[x] => '{ ZLayer.derive[x] }.asExprOf[ZLayer[?, Any, ?]]
+      }
+
+    val outputType = controllerTypes.reduceLeft[TypeRepr](AndType.apply)
+
+    outputType.asType match {
+      case '[output] =>
+        val layers = Varargs(allDeps.toList.map(deriveLayer))
+        '{
+          ZLayer.make[output].apply[Any]($layers*)
+        }
+    }
+  }
+
   private[core] def pathInput[T](
     name: String,
   )(using Codec[String, T, CodecFormat.TextPlain]
@@ -190,26 +265,45 @@ private[okapi] object AnnotationProcessor {
   ): Expr[ZServerEndpoint[T, sttp.capabilities.WebSockets]] = {
     import q.reflect.*
 
-    val ParsedMethod(params, body, isZioReturn, outputType) = parseMethod(methodSym)
+    val ParsedMethod(params, body, consumesMediaType, isZioReturn, outputType, producesMediaType) = parseMethod(methodSym)
+
+    val pathParamsByName: Map[String, ParamInfo] =
+      params.filter(_.kind == ParamKind.Path).map(p => p.name -> p).toMap
+    val consumedPathParams = scala.collection.mutable.Set.empty[String]
 
     var endpointTerm: Term = baseEndpointTerm(httpMethod)
 
     fullPath.split('/').nn.toList.filter(_.nonEmpty).foreach { segment =>
-      val fixedPath = '{
-        sttp.tapir.EndpointInput.FixedPath(${ Expr(segment) }, sttp.tapir.Codec.idPlain(), sttp.tapir.EndpointIO.Info.empty)
-      }.asTerm
-      endpointTerm = applyEndpointOperation(endpointTerm, "in", fixedPath)
+      if (segment.startsWith("{") && segment.endsWith("}") && segment.length > 2) {
+        val paramName = segment.substring(1, segment.length - 1).nn
+        pathParamsByName.get(paramName) match {
+          case Some(pathParam) =>
+            consumedPathParams += paramName
+            endpointTerm = applyEndpointOperation(endpointTerm, "in", parameterInputExpr(pathParam).asTerm)
+          case None =>
+            report.throwError(
+              s"Path template '$fullPath' contains {$paramName} but no @Path(\"$paramName\") parameter found in method '${methodSym.name}'"
+            )
+        }
+      } else {
+        val fixedPath = '{
+          sttp.tapir.EndpointInput.FixedPath(${ Expr(segment) }, sttp.tapir.Codec.idPlain(), sttp.tapir.EndpointIO.Info.empty)
+        }.asTerm
+        endpointTerm = applyEndpointOperation(endpointTerm, "in", fixedPath)
+      }
     }
 
     params.foreach { param =>
-      endpointTerm = applyEndpointOperation(endpointTerm, "in", parameterInputExpr(param).asTerm)
+      if (param.kind != ParamKind.Path || !consumedPathParams.contains(param.name)) {
+        endpointTerm = applyEndpointOperation(endpointTerm, "in", parameterInputExpr(param).asTerm)
+      }
     }
 
     body.foreach { bodyType =>
-      endpointTerm = applyEndpointOperation(endpointTerm, "in", jsonBodyExpr(bodyType.asInstanceOf[TypeRepr]).asTerm)
+      endpointTerm = applyEndpointOperation(endpointTerm, "in", requestBodyExpr(bodyType.asInstanceOf[TypeRepr], consumesMediaType).asTerm)
     }
 
-    endpointTerm = applyEndpointOperation(endpointTerm, "out", outputExpr(outputType.asInstanceOf[TypeRepr]).asTerm)
+    endpointTerm = applyEndpointOperation(endpointTerm, "out", responseBodyExpr(outputType.asInstanceOf[TypeRepr], producesMediaType).asTerm)
     endpointTerm = applyEndpointOperation(endpointTerm, "errorOut", errorOutputExpr.asTerm)
     endpointTerm = applyEndpointOperation(endpointTerm, "tag", Expr(tag).asTerm)
 
@@ -430,6 +524,91 @@ private[okapi] object AnnotationProcessor {
           case (None, _)                   => q.reflect.report.throwError(s"Missing zio.json.JsonCodec[${tpe.show}] for request body")
           case (_, None)                   => q.reflect.report.throwError(s"Missing sttp.tapir.Schema[${tpe.show}] for request body")
         }
+    }
+
+  private def requestBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr, mediaType: String): Expr[EndpointIO.Body[?, ?]] = {
+    import q.reflect.*
+    if tpe <:< TypeRepr.of[Array[Byte]] then binaryInputForMediaType(mediaType)
+    else if tpe <:< TypeRepr.of[String] then stringInputForMediaType(mediaType)
+    else mediaType match {
+      case "application/x-www-form-urlencoded" => formBodyExpr(tpe)
+      case "multipart/form-data"               => multipartBodyExpr(tpe)
+      case _                                   => jsonBodyExpr(tpe)
+    }
+  }
+
+  private def binaryInputForMediaType(using q: Quotes)(mediaType: String): Expr[EndpointIO.Body[?, ?]] =
+    '{ sttp.tapir.byteArrayBody }
+
+  private def stringInputForMediaType(using q: Quotes)(mediaType: String): Expr[EndpointIO.Body[?, ?]] =
+    mediaType match {
+      case "text/html"                              => '{ sttp.tapir.htmlBodyUtf8 }
+      case "text/xml" | "application/xml"           => '{ OkapiRuntime.xmlStringBody }
+      case "text/javascript" | "application/javascript" => '{ OkapiRuntime.jsStringBody }
+      case _                                        => '{ sttp.tapir.stringBody }
+    }
+
+  private def formBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr): Expr[EndpointIO.Body[?, ?]] =
+    tpe.asType match {
+      case '[t] =>
+        Expr.summon[Codec[String, t, CodecFormat.XWwwFormUrlencoded]] match {
+          case Some(codec) =>
+            '{ OkapiRuntime.formBodyInput[t]($codec) }
+          case None =>
+            q.reflect.report.throwError(
+              s"Missing Codec[String, ${tpe.show}, CodecFormat.XWwwFormUrlencoded] for @Consumes(\"application/x-www-form-urlencoded\") body. " +
+              "Import sttp.tapir.generic.auto.* or provide an implicit codec."
+            )
+        }
+    }
+
+  private def multipartBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr): Expr[EndpointIO.Body[?, ?]] =
+    tpe.asType match {
+      case '[t] =>
+        Expr.summon[MultipartCodec[t]] match {
+          case Some(codec) =>
+            '{ OkapiRuntime.multipartBodyInput[t]($codec) }
+          case None =>
+            q.reflect.report.throwError(
+              s"Missing MultipartCodec[${tpe.show}] for @Consumes(\"multipart/form-data\") body. " +
+              "Import sttp.tapir.generic.auto.* or provide an implicit codec."
+            )
+        }
+    }
+
+  private def responseBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr, mediaType: String): Expr[EndpointOutput[?]] = {
+    import q.reflect.*
+    if (tpe =:= TypeRepr.of[Unit]) '{ sttp.tapir.emptyOutput }
+    else if (tpe <:< TypeRepr.of[Array[Byte]]) '{ sttp.tapir.byteArrayBody }
+    else if (tpe <:< TypeRepr.of[String]) stringOutputForMediaType(mediaType)
+    else mediaType match {
+      case "text/html"                         => '{ sttp.tapir.htmlBodyUtf8 }
+      case t if t.startsWith("text/")          => '{ sttp.tapir.stringBody }
+      case t if t.startsWith("image/")         => '{ sttp.tapir.byteArrayBody }
+      case "application/octet-stream"          => '{ sttp.tapir.byteArrayBody }
+      case "application/pdf"                   => '{ sttp.tapir.byteArrayBody }
+      case "application/zip"                   => '{ sttp.tapir.byteArrayBody }
+      case "application/x-www-form-urlencoded" =>
+        tpe.asType match {
+          case '[t] =>
+            Expr.summon[Codec[String, t, CodecFormat.XWwwFormUrlencoded]] match {
+              case Some(codec) => '{ OkapiRuntime.formBodyOutput[t]($codec) }
+              case None =>
+                report.throwError(s"Missing Codec[String, ${tpe.show}, CodecFormat.XWwwFormUrlencoded] for @Produces(\"application/x-www-form-urlencoded\")")
+            }
+        }
+      case _ =>
+        outputExpr(tpe)
+    }
+  }
+
+  private def stringOutputForMediaType(using q: Quotes)(mediaType: String): Expr[EndpointOutput[?]] =
+    mediaType match {
+      case "text/html"                              => '{ sttp.tapir.htmlBodyUtf8 }
+      case "text/xml" | "application/xml"           => '{ OkapiRuntime.xmlStringBody }
+      case "text/javascript" | "application/javascript" => '{ OkapiRuntime.jsStringBody }
+      case "text/event-stream"                      => '{ OkapiRuntime.eventStreamBody }
+      case _                                        => '{ sttp.tapir.stringBody }
     }
 
   private def outputExpr(using q: Quotes)(tpe: q.reflect.TypeRepr): Expr[EndpointOutput[?]] =
@@ -691,7 +870,10 @@ private[okapi] object AnnotationProcessor {
     val returnType = methodReturnType(methodSym)
     val (isZioReturn, outputType) = unwrapReturnType(returnType)
 
-    ParsedMethod(params, bodyType, isZioReturn, outputType)
+    val consumesMediaType = annotationValue(methodSym, "Consumes").filter(_.nonEmpty).getOrElse("application/json")
+    val producesMediaType = annotationValue(methodSym, "Produces").filter(_.nonEmpty).getOrElse("application/json")
+
+    ParsedMethod(params, bodyType, consumesMediaType, isZioReturn, outputType, producesMediaType)
   }
 
   private def methodReturnType(using q: Quotes)(methodSym: q.reflect.Symbol): q.reflect.TypeRepr = {
@@ -797,7 +979,9 @@ private[okapi] object AnnotationProcessor {
   private final case class ParsedMethod(
     params: List[ParamInfo],
     body: Option[Any],
+    consumesMediaType: String,
     isZioReturn: Boolean,
     outputType: Any,
+    producesMediaType: String,
   )
 }

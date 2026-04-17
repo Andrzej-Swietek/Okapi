@@ -57,6 +57,35 @@ object OkapiRuntime {
     sttp.tapir.json.zio.jsonBody[T](using encoder, decoder, schema)
   }
 
+  def formBodyInput[T](codec: Codec[String, T, CodecFormat.XWwwFormUrlencoded]): EndpointIO.Body[String, T] =
+    sttp.tapir.formBody[T](using codec)
+
+  def formBodyOutput[T](codec: Codec[String, T, CodecFormat.XWwwFormUrlencoded]): EndpointOutput[T] =
+    sttp.tapir.formBody[T](using codec)
+
+  def multipartBodyInput[T](
+    codec: MultipartCodec[T],
+  ): EndpointIO.Body[Seq[RawPart], T] =
+    sttp.tapir.multipartBody[T](using codec)
+
+  def xmlStringBody: EndpointIO.Body[String, String] =
+    sttp.tapir.stringBodyAnyFormat(
+      Codec.id[String, CodecFormat.Xml](CodecFormat.Xml(), Schema.string),
+      java.nio.charset.StandardCharsets.UTF_8.nn,
+    )
+
+  def jsStringBody: EndpointIO.Body[String, String] =
+    sttp.tapir.stringBodyAnyFormat(
+      Codec.id[String, CodecFormat.TextJavascript](CodecFormat.TextJavascript(), Schema.string),
+      java.nio.charset.StandardCharsets.UTF_8.nn,
+    )
+
+  def eventStreamBody: EndpointIO.Body[String, String] =
+    sttp.tapir.stringBodyAnyFormat(
+      Codec.id[String, CodecFormat.TextEventStream](CodecFormat.TextEventStream(), Schema.string),
+      java.nio.charset.StandardCharsets.UTF_8.nn,
+    )
+
   def attachServerLogic[T, I, E, O](
     endpoint: Endpoint[Unit, I, E, O, Any],
     logic: I => ZIO[T, E, O],
