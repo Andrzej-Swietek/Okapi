@@ -1,5 +1,5 @@
 ThisBuild / organization := "io.okapi"
-ThisBuild / version := "0.1.0-SNAPSHOT"
+ThisBuild / version := "0.1.1"
 ThisBuild / scalaVersion := "3.6.4"
 
 lazy val core = project.in(file("core"))
@@ -7,5 +7,5 @@ lazy val core = project.in(file("core"))
 lazy val root = (project in file("."))
   .aggregate(core)
   .settings(
-    publish / skip := true
+    publish / skip := true,
   )

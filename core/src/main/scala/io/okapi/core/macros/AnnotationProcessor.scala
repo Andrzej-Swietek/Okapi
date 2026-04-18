@@ -3,6 +3,7 @@ package io.okapi.core.macros
 import io.okapi.core.annotations.*
 import io.okapi.core.http.ApiError
 import io.okapi.core.http.ApiError.ApiErrorResponse
+import io.okapi.core.http.FileResponse
 import io.okapi.core.OkapiRuntime
 import scala.quoted.*
 import sttp.tapir.*
@@ -530,7 +531,11 @@ private[okapi] object AnnotationProcessor {
       case other              => report.throwError(s"Unexpected ZIO type shape: ${other.show}")
     }
     val mappedErrorType = TypeRepr.of[(sttp.model.StatusCode, ApiErrorResponse)]
-    val successType = outputType.asInstanceOf[TypeRepr]
+    val controllerOutputType = outputType.asInstanceOf[TypeRepr]
+    val isFileResponse = controllerOutputType =:= TypeRepr.of[FileResponse]
+    val successType =
+      if isFileResponse then TypeRepr.of[(Array[Byte], String)]
+      else controllerOutputType
     val outerReturnType = AppliedType(zioTc, List(controllerTpe, mappedErrorType, successType))
     val innerReturnType = AppliedType(zioTc, List(TypeRepr.of[Any], mappedErrorType, successType))
 
@@ -549,9 +554,10 @@ private[okapi] object AnnotationProcessor {
             val methodCall = callControllerMethod(methodSym, extractedArgs, controllerTerm)
             val zioCall =
               if (isZioReturn) methodCall
-              else wrapInZioSucceed(methodCall, successType)
+              else wrapInZioSucceed(methodCall, controllerOutputType)
 
-            mapApiError(zioCall, successType)
+            if isFileResponse then mapFileResponseError(zioCall)
+            else mapApiError(zioCall, successType)
           },
         )
 
@@ -629,6 +635,15 @@ private[okapi] object AnnotationProcessor {
     )
   }
 
+  private def mapFileResponseError(using q: Quotes)(zioCall: q.reflect.Term): q.reflect.Term = {
+    import q.reflect.*
+    val helper = TypeApply(
+      Select.unique(Ref(Symbol.requiredModule("io.okapi.core.OkapiRuntime")), "mapFileResponseApiError"),
+      List(Inferred(TypeRepr.of[Any])),
+    )
+    Apply(helper, List(zioCall))
+  }
+
   private def mapApiError(using q: Quotes)(
     zioCall: q.reflect.Term,
     successType: q.reflect.TypeRepr,
@@ -678,7 +693,7 @@ private[okapi] object AnnotationProcessor {
         }
     }
 
-  private def jsonBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr): Expr[EndpointIO.Body[?, ?]] =
+  private def jsonBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr): Expr[EndpointInput[?]] =
     tpe.asType match {
       case '[t] =>
         val schemaExpr = Expr.summon[Schema[t]].orElse {
@@ -693,10 +708,14 @@ private[okapi] object AnnotationProcessor {
         }
     }
 
-  private def requestBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr, mediaType: String): Expr[EndpointIO.Body[?, ?]] = {
+  private def requestBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr, mediaType: String): Expr[EndpointInput[?]] = {
     import q.reflect.*
     if tpe <:< TypeRepr.of[Array[Byte]] then binaryInputForMediaType(mediaType)
     else if tpe <:< TypeRepr.of[String] then stringInputForMediaType(mediaType)
+    else if isZStreamOfByte(tpe) then
+      '{ EndpointIO.StreamBodyWrapper(
+           sttp.tapir.streamBody(sttp.capabilities.zio.ZioStreams)(sttp.tapir.Schema.binary, sttp.tapir.CodecFormat.OctetStream())
+         ) }
     else mediaType match {
       case "application/x-www-form-urlencoded" => formBodyExpr(tpe)
       case "multipart/form-data"               => multipartBodyExpr(tpe)
@@ -704,10 +723,19 @@ private[okapi] object AnnotationProcessor {
     }
   }
 
-  private def binaryInputForMediaType(using q: Quotes)(mediaType: String): Expr[EndpointIO.Body[?, ?]] =
+  private def isZStreamOfByte(using q: Quotes)(tpe: q.reflect.TypeRepr): Boolean = {
+    import q.reflect.*
+    tpe.dealias match {
+      case AppliedType(tc, List(_, _, elem)) if tc.typeSymbol.fullName == "zio.stream.ZStream" =>
+        elem.dealias =:= TypeRepr.of[Byte]
+      case _ => false
+    }
+  }
+
+  private def binaryInputForMediaType(using q: Quotes)(mediaType: String): Expr[EndpointInput[?]] =
     '{ sttp.tapir.byteArrayBody }
 
-  private def stringInputForMediaType(using q: Quotes)(mediaType: String): Expr[EndpointIO.Body[?, ?]] =
+  private def stringInputForMediaType(using q: Quotes)(mediaType: String): Expr[EndpointInput[?]] =
     mediaType match {
       case "text/html"                              => '{ sttp.tapir.htmlBodyUtf8 }
       case "text/xml" | "application/xml"           => '{ OkapiRuntime.xmlStringBody }
@@ -715,7 +743,7 @@ private[okapi] object AnnotationProcessor {
       case _                                        => '{ sttp.tapir.stringBody }
     }
 
-  private def formBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr): Expr[EndpointIO.Body[?, ?]] =
+  private def formBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr): Expr[EndpointInput[?]] =
     tpe.asType match {
       case '[t] =>
         Expr.summon[Codec[String, t, CodecFormat.XWwwFormUrlencoded]] match {
@@ -729,7 +757,7 @@ private[okapi] object AnnotationProcessor {
         }
     }
 
-  private def multipartBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr): Expr[EndpointIO.Body[?, ?]] =
+  private def multipartBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr): Expr[EndpointInput[?]] =
     tpe.asType match {
       case '[t] =>
         Expr.summon[MultipartCodec[t]] match {
@@ -746,6 +774,8 @@ private[okapi] object AnnotationProcessor {
   private def responseBodyExpr(using q: Quotes)(tpe: q.reflect.TypeRepr, mediaType: String): Expr[EndpointOutput[?]] = {
     import q.reflect.*
     if (tpe =:= TypeRepr.of[Unit]) '{ sttp.tapir.emptyOutput }
+    else if (tpe =:= TypeRepr.of[FileResponse])
+      '{ sttp.tapir.byteArrayBody.and(sttp.tapir.header[String]("Content-Disposition")) }
     else if (tpe <:< TypeRepr.of[Array[Byte]]) '{ sttp.tapir.byteArrayBody }
     else if (tpe <:< TypeRepr.of[String]) stringOutputForMediaType(mediaType)
     else mediaType match {

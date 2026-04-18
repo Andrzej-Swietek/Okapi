@@ -1,4 +1,3 @@
-ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "3.6.4"
 
 val zioVersion = "2.1.16"
