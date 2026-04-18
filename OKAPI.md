@@ -44,8 +44,9 @@ scalacOptions += "-Xmax-inlines:128"   // required for macro expansion depth
 | `@Put("/path")` | PUT |
 | `@Delete("/path")` | DELETE |
 | `@Patch("/path")` | PATCH |
+| `@WebSocket("/path")` | WebSocket (GET upgrade) |
 
-Path templates support `{paramName}` placeholders: `@Get("/{id}/reviews")`.
+Path templates support `{paramName}` placeholders: `@Get("/{id}/reviews")` or `@WebSocket("/chat/{room}")`.
 
 ### Parameter-level
 
@@ -65,6 +66,7 @@ All parameter types support `Option[T]` for optional values.
 |------------|---------|
 | `@Summary("text")` | Short description shown in Swagger |
 | `@Description("text")` | Long description shown in Swagger |
+| `@Deprecated()` | Marks endpoint as deprecated in Swagger |
 
 ### Content type
 
@@ -109,7 +111,59 @@ All parameter types support `Option[T]` for optional values.
 
 ---
 
-## Return types
+## WebSocket support
+
+Annotate a method with `@WebSocket("/path")` to create a WebSocket endpoint. The method must return `WsPipe[In, Out]` (a stream transformer).
+
+Supported message types:
+
+| `WsPipe` type | Wire format |
+|---------------|-------------|
+| `WsPipe[String, String]` | Text frames |
+| `WsPipe[Array[Byte], Array[Byte]]` | Binary frames |
+
+Return types for `@WebSocket`:
+
+| Return type | Meaning |
+|-------------|---------|
+| `WsPipe[In, Out]` | Pure — always connected, no setup effect |
+| `IO[ApiError, WsPipe[In, Out]]` | Effectful — runs setup on connect, then streams |
+
+Path params (`@Path`), query params (`@Query`), and headers (`@Header`) are supported on WebSocket methods — they are resolved during the HTTP upgrade handshake.
+
+```scala
+@Controller("/api/ws")
+@Tag("WebSocket")
+final class WsController(service: SomeService) {
+
+  @WebSocket("/echo")
+  @Summary("Echo every message back")
+  def echo: WsPipe[String, String] =
+    _.map(msg => s"echo: $msg")
+
+  @WebSocket("/chat/{room}")
+  def chat(
+    @Path("room")  room: String,
+    @Query("user") user: Option[String],
+  ): WsPipe[String, String] =
+    _.map(msg => s"[$room] ${user.getOrElse("anon")}: $msg")
+
+  @WebSocket("/updates")
+  @Summary("Run setup on connect, then stream")
+  def updates: IO[ApiError, WsPipe[String, String]] =
+    service.initialData.map { data =>
+      stream =>
+        ZStream.succeed(s"connected count=${data.total}") ++
+        stream.map(cmd => s"cmd=$cmd")
+    }
+}
+```
+
+`WsPipe[In, Out]` is a type alias for `ZStream[Any, Throwable, In] => ZStream[Any, Throwable, Out]`. Import `io.okapi.core.WsPipe` to use it. Import `zio.stream.ZStream` when constructing streams inside the method body.
+
+---
+
+## Return types (HTTP endpoints)
 
 Controller methods can return:
 - A pure value `T` — wrapped in `ZIO.succeed` automatically
@@ -243,8 +297,6 @@ object Main extends ZIOAppDefault {
 
 ### Missing features
 
-- **WebSocket support** — not implemented. Tapir supports WebSocket endpoints but the annotation processor doesn't generate them yet. Would need a new `@WebSocket` annotation and `ZioWebSocket` server logic.
-
 - **`multipart/form-data` with auto-derived codec** — `Expr.summon[MultipartCodec[T]]` at macro expansion time fails when the codec is provided only via `sttp.tapir.generic.auto.*` wildcard import and the case class is defined in another file. Workaround: define `given MultipartCodec[T]` explicitly in the companion object of the form class. Current example app uses raw binary upload instead.
 
 - **Response status codes** — all success responses are `200 OK`. A `@Status(201)` annotation (or deriving from the HTTP verb) is not yet supported.
@@ -255,9 +307,7 @@ object Main extends ZIOAppDefault {
 
 - **Request validation** — no `@NotNull`, `@Min`, `@Max` etc. Input validation must be done in the controller/service body.
 
-- **Streaming** — ZIO streams (`ZStream`) as request/response bodies are not handled.
-
-- **`@Deprecated`** — no way to mark an endpoint as deprecated in the Swagger output.
+- **Streaming response bodies** — `ZStream` as an HTTP response body (chunked transfer) is not handled. WebSocket streaming works, but HTTP chunked streaming does not.
 
 - **Server-Sent Events** — the `text/event-stream` codec is wired but SSE-specific ZIO streaming support is not.
 

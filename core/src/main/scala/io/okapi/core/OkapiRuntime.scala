@@ -5,6 +5,7 @@ import io.okapi.core.http.ApiError.ApiErrorResponse
 import sttp.tapir.*
 import sttp.tapir.ztapir.*
 import zio.*
+import zio.stream.ZStream
 
 object OkapiRuntime {
 
@@ -91,6 +92,30 @@ object OkapiRuntime {
     logic: I => ZIO[T, E, O],
   ): ZServerEndpoint[T, sttp.capabilities.WebSockets] =
     endpoint.zServerLogic(logic).asInstanceOf[ZServerEndpoint[T, sttp.capabilities.WebSockets]]
+
+  def attachWsServerLogic[T, I, E, In, Out](
+    endpoint: Endpoint[Unit, I, E, ZStream[Any, Throwable, In] => ZStream[Any, Throwable, Out], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets],
+    logic: I => ZIO[T, E, ZStream[Any, Throwable, In] => ZStream[Any, Throwable, Out]],
+  ): ZServerEndpoint[T, sttp.capabilities.WebSockets] =
+    endpoint.zServerLogic(logic).asInstanceOf[ZServerEndpoint[T, sttp.capabilities.WebSockets]]
+
+  private def textWsBody =
+    sttp.tapir.ztapir.webSocketBody[String, CodecFormat.TextPlain, String, CodecFormat.TextPlain](sttp.capabilities.zio.ZioStreams)
+
+  private def binaryWsBody =
+    sttp.tapir.ztapir.webSocketBody[Array[Byte], CodecFormat.OctetStream, Array[Byte], CodecFormat.OctetStream](sttp.capabilities.zio.ZioStreams)
+
+  def addTextWsOutput[S, I, E](
+    endpoint: Endpoint[S, I, E, Unit, Any],
+  ): Endpoint[S, I, E, WsPipe[String, String], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets] =
+    endpoint.out(textWsBody)
+      .asInstanceOf[Endpoint[S, I, E, WsPipe[String, String], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets]]
+
+  def addBinaryWsOutput[S, I, E](
+    endpoint: Endpoint[S, I, E, Unit, Any],
+  ): Endpoint[S, I, E, WsPipe[Array[Byte], Array[Byte]], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets] =
+    endpoint.out(binaryWsBody)
+      .asInstanceOf[Endpoint[S, I, E, WsPipe[Array[Byte], Array[Byte]], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets]]
 
   def liftPure[A](value: A): ZIO[Any, Nothing, A] =
     ZIO.succeed(value)

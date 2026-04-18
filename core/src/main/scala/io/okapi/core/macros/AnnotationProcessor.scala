@@ -15,7 +15,8 @@ import zio.http.{ Response, Routes }
 
 private[okapi] object AnnotationProcessor {
 
-  private val HttpAnnotations = Set("Get", "Post", "Put", "Delete", "Patch")
+  private val HttpAnnotations      = Set("Get", "Post", "Put", "Delete", "Patch")
+  private val WebSocketAnnotation  = "WebSocket"
 
   inline def endpoints[T]: List[ZServerEndpoint[T, sttp.capabilities.WebSockets]] =
     ${ endpointsImpl[T] }
@@ -233,7 +234,7 @@ private[okapi] object AnnotationProcessor {
       .filter(_.nonEmpty)
       .getOrElse(controllerSym.name)
 
-    val endpointExprs = controllerSym.memberMethods
+    val restExprs = controllerSym.memberMethods
       .filter(method => method.annotations.exists(a => HttpAnnotations.contains(a.tpe.typeSymbol.name)))
       .map { method =>
         val methodAnnotation = method.annotations.find(a => HttpAnnotations.contains(a.tpe.typeSymbol.name)).get
@@ -248,10 +249,28 @@ private[okapi] object AnnotationProcessor {
           tag = tag,
           summary = annotationValue(method, "Summary"),
           description = annotationValue(method, "Description"),
+          deprecated = hasAnnotation(method, "Deprecated"),
         )
       }
 
-    Expr.ofList(endpointExprs)
+    val wsExprs = controllerSym.memberMethods
+      .filter(method => method.annotations.exists(a => a.tpe.typeSymbol.name == WebSocketAnnotation))
+      .map { method =>
+        val wsAnnotation = method.annotations.find(a => a.tpe.typeSymbol.name == WebSocketAnnotation).get
+        val methodPath = extractStringArg(wsAnnotation).getOrElse("")
+
+        buildWebSocketEndpoint[T](
+          controllerTpe = controllerTpe,
+          methodSym = method,
+          fullPath = normalizePath(basePath, methodPath),
+          tag = tag,
+          summary = annotationValue(method, "Summary"),
+          description = annotationValue(method, "Description"),
+          deprecated = hasAnnotation(method, "Deprecated"),
+        )
+      }
+
+    Expr.ofList(restExprs ++ wsExprs)
   }
 
   private def buildEndpoint[T: Type](using q: Quotes)(
@@ -262,6 +281,7 @@ private[okapi] object AnnotationProcessor {
     tag: String,
     summary: Option[String],
     description: Option[String],
+    deprecated: Boolean = false,
   ): Expr[ZServerEndpoint[T, sttp.capabilities.WebSockets]] = {
     import q.reflect.*
 
@@ -315,6 +335,9 @@ private[okapi] object AnnotationProcessor {
       endpointTerm = applyEndpointOperation(endpointTerm, "description", Expr(value).asTerm)
     }
 
+    if deprecated then
+      endpointTerm = applyEndpointNoArgMethod(endpointTerm, "deprecated")
+
     val logicTerm = buildServerLogic[T](
       controllerTpe = controllerTpe,
       methodSym = methodSym,
@@ -343,6 +366,150 @@ private[okapi] object AnnotationProcessor {
     )
 
     Apply(helper, List(endpointTerm, logicTerm)).asExprOf[ZServerEndpoint[T, sttp.capabilities.WebSockets]]
+  }
+
+  private def buildWebSocketEndpoint[T: Type](using q: Quotes)(
+    controllerTpe: q.reflect.TypeRepr,
+    methodSym: q.reflect.Symbol,
+    fullPath: String,
+    tag: String,
+    summary: Option[String],
+    description: Option[String],
+    deprecated: Boolean = false,
+  ): Expr[ZServerEndpoint[T, sttp.capabilities.WebSockets]] = {
+    import q.reflect.*
+
+    val ParsedMethod(params, _, _, isZioReturn, outputType, _) = parseMethod(methodSym)
+
+    val (inType, outType) = extractWsPipeArgs(outputType.asInstanceOf[TypeRepr]).getOrElse {
+      report.throwError(
+        s"@WebSocket method '${methodSym.name}' must return WsPipe[In, Out] or IO[ApiError, WsPipe[In, Out]]. " +
+        s"Got: ${outputType.asInstanceOf[TypeRepr].show}"
+      )
+    }
+
+    val pathParamsByName: Map[String, ParamInfo] =
+      params.filter(_.kind == ParamKind.Path).map(p => p.name -> p).toMap
+    val consumedPathParams = scala.collection.mutable.Set.empty[String]
+
+    var endpointTerm: Term = '{ sttp.tapir.endpoint.get }.asTerm
+
+    fullPath.split('/').nn.toList.filter(_.nonEmpty).foreach { segment =>
+      if (segment.startsWith("{") && segment.endsWith("}") && segment.length > 2) {
+        val paramName = segment.substring(1, segment.length - 1).nn
+        pathParamsByName.get(paramName) match {
+          case Some(pathParam) =>
+            consumedPathParams += paramName
+            endpointTerm = applyEndpointOperation(endpointTerm, "in", parameterInputExpr(pathParam).asTerm)
+          case None =>
+            report.throwError(s"Path template '$fullPath' contains {$paramName} but no @Path(\"$paramName\") found")
+        }
+      } else {
+        val fixedPath = '{
+          sttp.tapir.EndpointInput.FixedPath(${ Expr(segment) }, sttp.tapir.Codec.idPlain(), sttp.tapir.EndpointIO.Info.empty)
+        }.asTerm
+        endpointTerm = applyEndpointOperation(endpointTerm, "in", fixedPath)
+      }
+    }
+
+    params.foreach { param =>
+      if (param.kind != ParamKind.Path || !consumedPathParams.contains(param.name)) {
+        endpointTerm = applyEndpointOperation(endpointTerm, "in", parameterInputExpr(param).asTerm)
+      }
+    }
+
+    val wsHelperName =
+      if inType =:= TypeRepr.of[String] && outType =:= TypeRepr.of[String] then "addTextWsOutput"
+      else if inType <:< TypeRepr.of[Array[Byte]] && outType <:< TypeRepr.of[Array[Byte]] then "addBinaryWsOutput"
+      else
+        report.throwError(
+          s"@WebSocket '${methodSym.name}': unsupported message types In=${inType.show} Out=${outType.show}. " +
+          "Supported: WsPipe[String, String] (text) or WsPipe[Array[Byte], Array[Byte]] (binary)."
+        )
+
+    val endpointBaseTypeBeforeWs = endpointTerm.tpe.widenTermRefByName.baseType(TypeRepr.of[Endpoint[Any, Any, Any, Any, Any]].typeSymbol)
+    val (wsSecurityInput, wsCurrentInput, wsCurrentError, _, _) = endpointBaseTypeBeforeWs match {
+      case AppliedType(_, List(si, i, e, o, c)) => (si, i, e, o, c)
+      case other => report.throwError(s"Unexpected endpoint type shape before addWsOutput: ${other.show}")
+    }
+
+    val wsAddOutputHelper = TypeApply(
+      Select.unique(Ref(Symbol.requiredModule("io.okapi.core.OkapiRuntime")), wsHelperName),
+      List(Inferred(wsSecurityInput), Inferred(wsCurrentInput), Inferred(wsCurrentError)),
+    )
+    endpointTerm = Apply(wsAddOutputHelper, List(endpointTerm))
+
+    val wsTpe = outputType.asInstanceOf[TypeRepr]
+    endpointTerm = applyEndpointOperation(endpointTerm, "errorOut", errorOutputExpr.asTerm)
+    endpointTerm = applyEndpointOperation(endpointTerm, "tag", Expr(tag).asTerm)
+
+    summary.foreach { value =>
+      endpointTerm = applyEndpointOperation(endpointTerm, "summary", Expr(value).asTerm)
+    }
+    description.foreach { value =>
+      endpointTerm = applyEndpointOperation(endpointTerm, "description", Expr(value).asTerm)
+    }
+    if deprecated then
+      endpointTerm = applyEndpointNoArgMethod(endpointTerm, "deprecated")
+
+    val logicTerm = buildServerLogic[T](
+      controllerTpe = controllerTpe,
+      methodSym = methodSym,
+      params = params,
+      body = None,
+      isZioReturn = isZioReturn,
+      outputType = wsTpe,
+    )
+
+    val endpointBaseType = endpointTerm.tpe.widenTermRefByName.baseType(TypeRepr.of[Endpoint[Any, Any, Any, Any, Any]].typeSymbol)
+    val (_, inputType, errorType, _, _) = endpointBaseType match {
+      case AppliedType(_, List(securityInput, input, errorOutput, output, capability)) =>
+        (securityInput, input, errorOutput, output, capability)
+      case other =>
+        report.throwError(s"Unexpected endpoint type shape before attaching WS logic: ${other.show}")
+    }
+
+    val helper = TypeApply(
+      Select.unique(Ref(Symbol.requiredModule("io.okapi.core.OkapiRuntime")), "attachWsServerLogic"),
+      List(
+        Inferred(TypeRepr.of[T]),
+        Inferred(inputType),
+        Inferred(errorType),
+        Inferred(inType),
+        Inferred(outType),
+      ),
+    )
+
+    Apply(helper, List(endpointTerm, logicTerm)).asExprOf[ZServerEndpoint[T, sttp.capabilities.WebSockets]]
+  }
+
+  private def extractWsPipeArgs(using q: Quotes)(tpe: q.reflect.TypeRepr): Option[(q.reflect.TypeRepr, q.reflect.TypeRepr)] = {
+    import q.reflect.*
+    val fn1Sym    = defn.FunctionClass(1)
+    val zstreamSym = TypeRepr.of[zio.stream.ZStream[Any, Throwable, Any]].typeSymbol
+
+    tpe.dealias match {
+      case AppliedType(fn, List(inStream, outStream)) if fn.typeSymbol == fn1Sym =>
+        (inStream.dealias, outStream.dealias) match {
+          case (AppliedType(zsi, List(_, _, inType)), AppliedType(zso, List(_, _, outType)))
+              if zsi.typeSymbol == zstreamSym && zso.typeSymbol == zstreamSym =>
+            Some((inType, outType))
+          case _ => None
+        }
+      case _ => None
+    }
+  }
+
+  private def applyEndpointNoArgMethod(using q: Quotes)(
+    qualifier: q.reflect.Term,
+    methodName: String,
+  ): q.reflect.Term = {
+    import q.reflect.*
+    val ownerSymbol = qualifier.tpe.widenTermRefByName.typeSymbol
+    val method = ownerSymbol.memberMethod(methodName).headOption.getOrElse {
+      report.throwError(s"Cannot resolve zero-arg method '$methodName' on ${qualifier.tpe.show}")
+    }
+    Apply(Select(qualifier, method), Nil)
   }
 
   private def buildServerLogic[T: Type](using q: Quotes)(

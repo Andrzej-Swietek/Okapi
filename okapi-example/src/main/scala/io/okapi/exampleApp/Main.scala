@@ -8,7 +8,7 @@ import io.okapi.core.Okapi
 
 object Main extends ZIOAppDefault {
 
-  private type Controllers = (BookController, UserController, ExploreController, CoverController, AdminController)
+  private type Controllers = (BookController, UserController, ExploreController, CoverController, AdminController, WsController)
 
   private val serverPort =
     sys.env.get("OKAPI_EXAMPLE_PORT").flatMap(_.toIntOption).getOrElse(38081)
