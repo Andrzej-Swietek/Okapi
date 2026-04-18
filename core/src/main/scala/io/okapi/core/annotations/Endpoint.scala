@@ -25,4 +25,7 @@ final class Consumes(val mediaType: String = "application/json") extends StaticA
 final class Description(val text: String) extends StaticAnnotation
 final class Summary(val text: String) extends StaticAnnotation
 
+final class WebSocket(val path: String = "") extends StaticAnnotation
+final class Deprecated() extends StaticAnnotation
+
 final class Service(val text: String) extends StaticAnnotation

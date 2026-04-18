@@ -1,23 +1,27 @@
 package io.okapi.exampleApp
 
-import zio.json.JsonCodec
-
-import io.okapi.core.annotations.{ Controller, Get, Query, Summary, Tag }
-
-final case class AdminStatusDto(area: String, enabled: Boolean) derives JsonCodec
+import zio.IO
+import io.okapi.core.annotations.*
+import io.okapi.core.http.ApiError
 
 @Controller("/api/admin")
 @Tag("Admin")
-final class AdminController {
+final class AdminController(bookService: BookService) {
 
-  @Get("/ping")
-  @Summary("Admin ping endpoint")
-  def ping(
-    @Query("source") source: Option[String]
-  ): String =
-    s"pong:${source.getOrElse("admin")}"
+  @Get("/health")
+  @Summary("Health check")
+  @Produces("text/plain")
+  def health: String =
+    s"OK uptime=${java.lang.System.currentTimeMillis()}ms"
 
-  @Get("/status")
-  def status: AdminStatusDto =
-    AdminStatusDto(area = "admin", enabled = true)
+  @Get("/stats")
+  @Summary("Get book statistics (JSON)")
+  def stats: IO[ApiError, BookStats] =
+    bookService.getStats
+
+  @Get("/export")
+  @Summary("Export all books as CSV (binary download)")
+  @Produces("application/octet-stream")
+  def exportCsv: IO[ApiError, Array[Byte]] =
+    bookService.exportCsv
 }

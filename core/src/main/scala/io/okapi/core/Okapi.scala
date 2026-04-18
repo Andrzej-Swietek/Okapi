@@ -85,6 +85,9 @@ object Okapi {
   transparent inline def serviceLayers[Types <: Tuple] =
     macros.AnnotationProcessor.serviceLayers[Types]
 
+  transparent inline def autoLayer[Types <: Tuple]: ZLayer[Any, Nothing, Environment[Types]] =
+    macros.AnnotationProcessor.autoLayer[Types].asInstanceOf[ZLayer[Any, Nothing, Environment[Types]]]
+
   inline def registerOkapiControllers[Types <: Tuple] =
     new RegisterControllersPartiallyApplied[Types]
 
