@@ -2,6 +2,7 @@ package io.okapi.core
 
 import io.okapi.core.http.ApiError
 import io.okapi.core.http.ApiError.ApiErrorResponse
+import io.okapi.core.http.FileResponse
 import sttp.tapir.*
 import sttp.tapir.ztapir.*
 import zio.*
@@ -116,6 +117,13 @@ object OkapiRuntime {
   ): Endpoint[S, I, E, WsPipe[Array[Byte], Array[Byte]], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets] =
     endpoint.out(binaryWsBody)
       .asInstanceOf[Endpoint[S, I, E, WsPipe[Array[Byte], Array[Byte]], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets]]
+
+  def mapFileResponseApiError[R](
+    effect: ZIO[R, ApiError, FileResponse],
+  ): ZIO[R, (sttp.model.StatusCode, ApiErrorResponse), (Array[Byte], String)] =
+    effect
+      .map(fr => (fr.data, s"""attachment; filename="${fr.filename}""""))
+      .mapError(e => (e.status, ApiError.toResponse(e)))
 
   def liftPure[A](value: A): ZIO[Any, Nothing, A] =
     ZIO.succeed(value)
