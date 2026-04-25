@@ -237,6 +237,12 @@ private[okapi] object AnnotationProcessor {
 
     val restExprs = controllerSym.memberMethods
       .filter(method => method.annotations.exists(a => HttpAnnotations.contains(a.tpe.typeSymbol.name)))
+      .sortBy { method =>
+        // literal segments must be tried before path-parameter segments; sort by path-param count ascending
+        val methodAnnotation = method.annotations.find(a => HttpAnnotations.contains(a.tpe.typeSymbol.name)).get
+        val methodPath = extractStringArg(methodAnnotation).getOrElse("")
+        methodPath.split('/').count(seg => seg.startsWith("{") && seg.endsWith("}"))
+      }
       .map { method =>
         val methodAnnotation = method.annotations.find(a => HttpAnnotations.contains(a.tpe.typeSymbol.name)).get
         val httpMethod = methodAnnotation.tpe.typeSymbol.name
@@ -339,13 +345,24 @@ private[okapi] object AnnotationProcessor {
     if deprecated then
       endpointTerm = applyEndpointNoArgMethod(endpointTerm, "deprecated")
 
+    // Tapir builds the input tuple with path params in URL order first, then non-path params
+    // in declaration order. We need to map each declaration-order param to its Tapir tuple
+    // index so extractArgs pulls values from the correct positions.
+    val pathParamOrder: List[String] = fullPath.split('/').nn.toList
+      .filter(s => s.nonEmpty && s.startsWith("{") && s.endsWith("}") && s.length > 2)
+      .map(s => s.substring(1, s.length - 1).nn)
+    val pathParamsInOrder  = pathParamOrder.flatMap(name => params.find(p => p.name == name && p.kind == ParamKind.Path))
+    val nonPathParams      = params.filter(_.kind != ParamKind.Path)
+    val tapirOrderedNames  = (pathParamsInOrder ++ nonPathParams).map(_.name)
+
     val logicTerm = buildServerLogic[T](
-      controllerTpe = controllerTpe,
-      methodSym = methodSym,
-      params = params,
-      body = body,
-      isZioReturn = isZioReturn,
-      outputType = outputType,
+      controllerTpe    = controllerTpe,
+      methodSym        = methodSym,
+      params           = params,
+      body             = body,
+      isZioReturn      = isZioReturn,
+      outputType       = outputType,
+      tapirParamOrder  = tapirOrderedNames,
     )
 
     val endpointBaseType = endpointTerm.tpe.widenTermRefByName.baseType(TypeRepr.of[Endpoint[Any, Any, Any, Any, Any]].typeSymbol)
@@ -514,12 +531,13 @@ private[okapi] object AnnotationProcessor {
   }
 
   private def buildServerLogic[T: Type](using q: Quotes)(
-    controllerTpe: q.reflect.TypeRepr,
-    methodSym: q.reflect.Symbol,
-    params: List[ParamInfo],
-    body: Option[Any],
-    isZioReturn: Boolean,
-    outputType: Any,
+    controllerTpe:   q.reflect.TypeRepr,
+    methodSym:       q.reflect.Symbol,
+    params:          List[ParamInfo],
+    body:            Option[Any],
+    isZioReturn:     Boolean,
+    outputType:      Any,
+    tapirParamOrder: List[String] = Nil,
   ): q.reflect.Term = {
     import q.reflect.*
 
@@ -550,7 +568,7 @@ private[okapi] object AnnotationProcessor {
           MethodType(List("controller"))(_ => List(controllerTpe), _ => innerReturnType),
           (innerOwner, controllerTerms) => {
             val controllerTerm = controllerTerms.head.asInstanceOf[Term]
-            val extractedArgs = extractArgs(inputTerm, params, body)
+            val extractedArgs = extractArgs(inputTerm, params, body, tapirParamOrder)
             val methodCall = callControllerMethod(methodSym, extractedArgs, controllerTerm)
             val zioCall =
               if (isZioReturn) methodCall
@@ -572,25 +590,34 @@ private[okapi] object AnnotationProcessor {
   }
 
   private def extractArgs(using q: Quotes)(
-    inputTerm: q.reflect.Term,
-    params: List[ParamInfo],
-    body: Option[Any],
+    inputTerm:       q.reflect.Term,
+    params:          List[ParamInfo],
+    body:            Option[Any],
+    tapirParamOrder: List[String] = Nil,
   ): List[q.reflect.Term] = {
     import q.reflect.*
 
-    val inputTypes = params.map(_.tpe.asInstanceOf[TypeRepr]) ++ body.toList.map(_.asInstanceOf[TypeRepr])
+    val allTypes = params.map(_.tpe.asInstanceOf[TypeRepr]) ++ body.toList.map(_.asInstanceOf[TypeRepr])
 
-    if (inputTypes.isEmpty) Nil
-    else if (inputTypes.length == 1) List(castTerm(inputTerm, inputTypes.head))
+    if (allTypes.isEmpty) Nil
+    else if (allTypes.length == 1) List(castTerm(inputTerm, allTypes.head))
     else {
       val asProduct = TypeApply(Select.unique(inputTerm, "asInstanceOf"), List(Inferred(TypeRepr.of[Product])))
-      inputTypes.zipWithIndex.map { case (tpe, idx) =>
-        val element = Apply(
-          Select.unique(asProduct, "productElement"),
-          List(Literal(IntConstant(idx))),
-        )
-        castTerm(element, tpe)
+
+      def element(idx: Int, tpe: TypeRepr): Term =
+        castTerm(Apply(Select.unique(asProduct, "productElement"), List(Literal(IntConstant(idx)))), tpe)
+
+      val paramArgs = params.map { p =>
+        val tapirIdx =
+          if (tapirParamOrder.nonEmpty) tapirParamOrder.indexOf(p.name)
+          else params.indexOf(p)
+        element(tapirIdx, p.tpe.asInstanceOf[TypeRepr])
       }
+
+      val bodyIdx  = if (tapirParamOrder.nonEmpty) tapirParamOrder.length else params.length
+      val bodyArgs = body.toList.map(tpe => element(bodyIdx, tpe.asInstanceOf[TypeRepr]))
+
+      paramArgs ++ bodyArgs
     }
   }
 
