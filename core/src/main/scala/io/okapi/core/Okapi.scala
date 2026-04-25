@@ -40,7 +40,7 @@ object Okapi {
     macros.AnnotationProcessor.endpoints[T]
 
   inline def generateEndpoints[T]: List[ZServerEndpoint[T, sttp.capabilities.WebSockets]] =
-    macros.AnnotationProcessor.generateEndpoints[T]
+    macros.AnnotationProcessor.endpoints[T]
 
   inline def swaggerRoutes[T](
     title: String,
@@ -83,7 +83,7 @@ object Okapi {
     macros.AnnotationProcessor.controllerLayers[Types]
 
   transparent inline def serviceLayers[Types <: Tuple] =
-    macros.AnnotationProcessor.serviceLayers[Types]
+    macros.AnnotationProcessor.controllerLayers[Types]
 
   transparent inline def autoLayer[Types <: Tuple]: ZLayer[Any, Nothing, Environment[Types]] =
     macros.AnnotationProcessor.autoLayer[Types].asInstanceOf[ZLayer[Any, Nothing, Environment[Types]]]
