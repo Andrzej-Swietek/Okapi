@@ -41,6 +41,14 @@ lazy val core = (project in file("."))
     externalResolvers ++= Seq(
       Resolver.defaultLocal
     ),
+    publishTo := Some("GitHub Package Registry" at "https://maven.pkg.github.com/Andrzej-Swietek/Okapi"),
+    publishMavenStyle := true,
+    credentials += Credentials(
+      "GitHub Package Registry",
+      "maven.pkg.github.com",
+      "Andrzej-Swietek",
+      sys.env.getOrElse("GITHUB_TOKEN", ""),
+    ),
   )
 
 addCommandAlias("fmt", "all scalafmtSbt scalafmtAll")
