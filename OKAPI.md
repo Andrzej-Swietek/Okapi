@@ -34,6 +34,7 @@ scalacOptions += "-Xmax-inlines:128"   // required for macro expansion depth
 |------------|---------|
 | `@Controller("/base/path")` | Marks a class as a controller; sets the path prefix |
 | `@Tag("GroupName")` | Groups endpoints under a Swagger tag |
+| `@ApiTag("GroupName")` | Same as `@Tag`, but collision-free when `import zio.*` is in scope (it also exports `zio.Tag`) |
 
 ### Method-level (HTTP verbs)
 
@@ -57,6 +58,7 @@ Path templates support `{paramName}` placeholders: `@Get("/{id}/reviews")` or `@
 | `@Header("name")` | HTTP request header |
 | `@Cookie("name")` | HTTP cookie |
 | `@RequestBody` | Request body (dispatched by `@Consumes`) |
+| `@BearerAuth` | Binds the `Authorization: Bearer <token>` header to a `String` parameter and advertises a bearer security scheme |
 
 All parameter types support `Option[T]` for optional values.
 
@@ -74,6 +76,14 @@ All parameter types support `Option[T]` for optional values.
 |------------|---------|
 | `@Consumes("media/type")` | Declares request body format (default: `application/json`) |
 | `@Produces("media/type")` | Declares response format (default: `application/json`) |
+
+### Response status
+
+The success status is inferred: **201** for `@Post`, **204** for a `Unit` return, **200** otherwise. Override it explicitly:
+
+| Annotation | Purpose |
+|------------|---------|
+| `@Status(code)` | Sets the success HTTP status code for the endpoint |
 
 ---
 
@@ -169,6 +179,8 @@ Controller methods can return:
 - A pure value `T` — wrapped in `ZIO.succeed` automatically
 - `IO[ApiError, T]` — error is mapped to the right HTTP status
 - `ZIO[Any, ApiError, T]` — same as above, env must be `Any`
+- `FileResponse` — binary download; sets `Content-Disposition` from the filename (quotes/CR/LF stripped)
+- `ZStream[Any, Throwable, Byte]` (with `@Produces("application/octet-stream")`) — chunked binary streaming
 
 `ApiError` variants:
 
@@ -176,7 +188,11 @@ Controller methods can return:
 |------|-------------|
 | `ApiError.BadRequest(msg)` | 400 |
 | `ApiError.Unauthorized(msg)` | 401 |
+| `ApiError.Forbidden(msg)` | 403 |
 | `ApiError.NotFound(msg)` | 404 |
+| `ApiError.Conflict(msg)` | 409 |
+| `ApiError.UnprocessableEntity(msg)` | 422 |
+| `ApiError.TooManyRequests(msg)` | 429 |
 | `ApiError.Internal(msg)` | 500 |
 
 ---
@@ -189,6 +205,9 @@ Okapi.routes[Controllers]                           // Routes[Env, Response]
 
 // Generate Swagger UI routes
 Okapi.swagger[Controllers]("Title", "1.0.0")        // Routes[Any, Response]
+
+// Render the OpenAPI 3 spec as a YAML string (serve at e.g. /openapi.yaml)
+Okapi.openApiYaml[Controllers]("Title", "1.0.0")    // String
 
 // Generate Tapir endpoint list (for custom handling)
 Okapi.endpoints[MyController]                       // List[ZServerEndpoint[T, WS]]
@@ -297,25 +316,21 @@ object Main extends ZIOAppDefault {
 
 ### Missing features
 
-- **`multipart/form-data` with auto-derived codec** — `Expr.summon[MultipartCodec[T]]` at macro expansion time fails when the codec is provided only via `sttp.tapir.generic.auto.*` wildcard import and the case class is defined in another file. Workaround: define `given MultipartCodec[T]` explicitly in the companion object of the form class. Current example app uses raw binary upload instead.
+- **`multipart/form-data` with auto-derived codec** — `Expr.summon[MultipartCodec[T]]` at macro expansion time fails when the codec is provided only via `sttp.tapir.generic.auto.*` wildcard import and the case class is defined in another file. Workaround: define `given MultipartCodec[T]` explicitly in the companion object of the form class.
 
-- **Response status codes** — all success responses are `200 OK`. A `@Status(201)` annotation (or deriving from the HTTP verb) is not yet supported.
+- **Multiple response bodies (`oneOf`)** — Tapir supports `oneOf` for different response types per status code. Okapi always maps a single return type to a single output body.
 
-- **Multiple response bodies** — Tapir supports `oneOf` for different response types per status code. Okapi always maps a single return type to a single output body.
+- **Security schemes beyond bearer** — `@BearerAuth` covers bearer tokens (passed to the controller and advertised in OpenAPI). API-key / OAuth2 `securityIn` schemes and the `serverSecurityLogic` split are not generated; use `@Header` for those for now.
 
-- **Security / authentication** — Tapir has `securityIn` for auth schemes (Bearer token, API key, etc.). Okapi doesn't generate security inputs; auth must be handled manually or via `@Header`.
+- **Request validation** — no `@Min`, `@Max`, `@NotBlank` etc. Input validation must be done in the controller/service body.
 
-- **Request validation** — no `@NotNull`, `@Min`, `@Max` etc. Input validation must be done in the controller/service body.
-
-- **Streaming response bodies** — `ZStream` as an HTTP response body (chunked transfer) is not handled. WebSocket streaming works, but HTTP chunked streaming does not.
-
-- **Server-Sent Events** — the `text/event-stream` codec is wired but SSE-specific ZIO streaming support is not.
+- **Server-Sent Events** — the `text/event-stream` codec is wired, but first-class streaming of `ServerSentEvent` values is not. Binary HTTP streaming (a `ZStream[Any, Throwable, Byte]` response body) **is** supported.
 
 ### Known gotchas
 
 - `routes[Controllers]` and `swagger[Controllers]` must be `lazy val` (not `val`) in `object Main` to avoid JVM `Method too large` error when there are many endpoints.
 
-- In files that use `@Tag` from `io.okapi.core.annotations`, do NOT `import zio.*` (it also exports `zio.Tag`). Use `import zio.{ IO, ZIO }` instead.
+- `@Tag` from `io.okapi.core.annotations` collides with `zio.Tag` under `import zio.*`. Either use `import zio.{ IO, ZIO }`, or use the **`@ApiTag`** alias, which never collides.
 
 - `java.lang.System.currentTimeMillis()` — `import zio.*` shadows `System` with `zio.System`. Use the fully qualified name.
 

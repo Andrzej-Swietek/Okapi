@@ -51,20 +51,15 @@ object OkapiRuntime {
     sttp.tapir.json.zio.jsonBody[T](using encoder, decoder, schema)
   }
 
-  def jsonBodyOutput[T](
-    codec: zio.json.JsonCodec[T],
-    schema: Schema[T],
-  ): EndpointOutput[T] = {
-    val encoder = zio.json.JsonEncoder.fromCodec(codec)
-    val decoder = zio.json.JsonDecoder.fromCodec(codec)
-    sttp.tapir.json.zio.jsonBody[T](using encoder, decoder, schema)
-  }
+  // a Tapir json Body is itself an EndpointOutput, so the output variants just reuse the input builders
+  def jsonBodyOutput[T](codec: zio.json.JsonCodec[T], schema: Schema[T]): EndpointOutput[T] =
+    jsonBodyInput(codec, schema)
 
   def formBodyInput[T](codec: Codec[String, T, CodecFormat.XWwwFormUrlencoded]): EndpointIO.Body[String, T] =
     sttp.tapir.formBody[T](using codec)
 
   def formBodyOutput[T](codec: Codec[String, T, CodecFormat.XWwwFormUrlencoded]): EndpointOutput[T] =
-    sttp.tapir.formBody[T](using codec)
+    formBodyInput(codec)
 
   def multipartBodyInput[T](
     codec: MultipartCodec[T]

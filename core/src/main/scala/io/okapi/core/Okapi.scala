@@ -4,6 +4,8 @@ import zio.{ Task, ZIO, ZLayer }
 import zio.http.{ Response, Routes }
 
 import scala.compiletime.erasedValue
+import sttp.apispec.openapi.circe.yaml.*
+import sttp.tapir.docs.openapi.OpenAPIDocsInterpreter
 import sttp.tapir.server.ziohttp.ZioHttpInterpreter
 import sttp.tapir.swagger.bundle.SwaggerInterpreter
 import sttp.tapir.ztapir.ZServerEndpoint
@@ -81,6 +83,12 @@ object Okapi {
   ): Routes[Any, Response] = {
     val publicEndpoints = selectedEndpoints[Types].map(_.endpoint)
     ZioHttpInterpreter().toHttp(SwaggerInterpreter().fromEndpoints[Task](publicEndpoints, title, version))
+  }
+
+  /** Renders the OpenAPI 3 spec for the given controllers as a YAML string (e.g. to serve at `/openapi.yaml`). */
+  inline def openApiYaml[Types <: Tuple](title: String, version: String): String = {
+    val publicEndpoints = selectedEndpoints[Types].map(_.endpoint)
+    OpenAPIDocsInterpreter().toOpenAPI(publicEndpoints, title, version).toYaml
   }
 
   transparent inline def controllerLayers[Types <: Tuple] =

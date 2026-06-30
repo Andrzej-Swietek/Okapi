@@ -75,11 +75,12 @@ Run it and open `http://localhost:8080/docs` for the Swagger UI.
 ## What you get
 
 - `@Controller` / `@Get` / `@Post` / `@Put` / `@Delete` / `@Patch` / `@WebSocket` routing from annotations
-- `@Path` / `@Query` / `@Header` / `@Cookie` / `@RequestBody` parameter binding
+- `@Path` / `@Query` / `@Header` / `@Cookie` / `@RequestBody` / `@BearerAuth` parameter binding
 - `@Consumes` / `@Produces` content negotiation (JSON, form, multipart, text, XML, binary, SSE, …)
-- `ApiError` → HTTP status mapping, `FileResponse` downloads, and WebSocket pipes
+- success status codes inferred per verb (`201` / `204` / `200`) or set explicitly with `@Status(code)`
+- `ApiError` → HTTP status mapping, `FileResponse` downloads, binary `ZStream` responses, and WebSocket pipes
 - `Okapi.autoLayer[Controllers]` — compile-time `ZLayer` wiring of the whole dependency tree
-- Swagger UI generation
+- Swagger UI + `Okapi.openApiYaml` for the raw OpenAPI 3 spec
 
 ## Documentation
 

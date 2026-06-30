@@ -12,10 +12,16 @@ final class Patch(val path: String = "") extends StaticAnnotation
 final class Controller(val basePath: String = "") extends StaticAnnotation
 final class Tag(val name: String = "") extends StaticAnnotation
 
+/** Collision-free alias for [[Tag]] — use this when `import zio.*` is in scope (it also exports `zio.Tag`). */
+final class ApiTag(val name: String = "") extends StaticAnnotation
+
 final class Query(val name: String = "") extends StaticAnnotation
 final class Path(val name: String = "") extends StaticAnnotation
 final class Header(val name: String = "") extends StaticAnnotation
 final class Cookie(val name: String = "") extends StaticAnnotation
+
+/** Binds an `Authorization: Bearer <token>` header to a `String` parameter and advertises a bearer security scheme. */
+final class BearerAuth() extends StaticAnnotation
 
 final class RequestBody() extends StaticAnnotation
 
@@ -27,3 +33,6 @@ final class Summary(val text: String) extends StaticAnnotation
 
 final class WebSocket(val path: String = "") extends StaticAnnotation
 final class Deprecated() extends StaticAnnotation
+
+/** Overrides the success HTTP status code (default: 201 for POST, 204 for `Unit`, otherwise 200). */
+final class Status(val code: Int) extends StaticAnnotation

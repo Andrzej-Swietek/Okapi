@@ -23,6 +23,18 @@ object ApiError {
   final case class Internal(message: String) extends ApiError {
     val status: StatusCode = StatusCode.InternalServerError
   }
+  final case class Forbidden(message: String) extends ApiError {
+    val status: StatusCode = StatusCode.Forbidden
+  }
+  final case class Conflict(message: String) extends ApiError {
+    val status: StatusCode = StatusCode.Conflict
+  }
+  final case class UnprocessableEntity(message: String) extends ApiError {
+    val status: StatusCode = StatusCode.UnprocessableEntity
+  }
+  final case class TooManyRequests(message: String) extends ApiError {
+    val status: StatusCode = StatusCode.TooManyRequests
+  }
 
   final case class ApiErrorResponse(code: Int, message: String)
   object ApiErrorResponse {

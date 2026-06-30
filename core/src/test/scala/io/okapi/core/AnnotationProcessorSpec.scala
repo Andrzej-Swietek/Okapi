@@ -6,7 +6,10 @@ import zio.json.JsonCodec
 import zio.test.*
 
 import io.okapi.core.annotations.{
+  ApiTag,
+  BearerAuth,
   Controller,
+  Cookie,
   Delete,
   Get,
   Path,
@@ -17,8 +20,9 @@ import io.okapi.core.annotations.{
   RequestBody,
   Summary,
   Tag,
+  WebSocket,
 }
-import io.okapi.core.http.ApiError
+import io.okapi.core.http.{ ApiError, FileResponse }
 import sttp.tapir.server.ziohttp.ZioHttpInterpreter
 
 object AnnotationProcessorSpec extends ZIOSpecDefault {
@@ -186,6 +190,136 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
     def getUser(@Path("id") id: Int): HelloResponse = HelloResponse(users.find(id))
   }
 
+  // ─── Controllers for feature tests ─────────────────────────────────────────
+
+  @Controller("/api/map")
+  @ApiTag("MapApi")
+  final class MappingController {
+
+    // the canonical "two path params split by a fixed segment + required & optional query" shape
+    @Get("/costam/{param1}/x/{param2}")
+    def costam(
+      @Path("param1") param1: String,
+      @Path("param2") param2: Int,
+      @Query("id") id: String,
+      @Query("query") query: Option[String],
+    ): HelloResponse =
+      HelloResponse(s"p1=$param1 p2=$param2 id=$id q=${query.getOrElse("none")}")
+
+    // @Path declared in REVERSE of URL order, with a query interleaved first
+    @Get("/r/{a}/{b}")
+    def reversed(
+      @Query("q") q: String,
+      @Path("b") b: Int,
+      @Path("a") a: String,
+    ): HelloResponse =
+      HelloResponse(s"a=$a b=$b q=$q")
+
+    // @Path("b") is NOT in the URL template -> appended as a trailing capture (guards the extractArgs ordering fix)
+    @Get("/u/{a}")
+    def unconsumed(
+      @Query("q") q: String,
+      @Path("b") b: Int,
+      @Path("a") a: String,
+    ): HelloResponse =
+      HelloResponse(s"a=$a b=$b q=$q")
+  }
+
+  @Controller("/api/status")
+  @ApiTag("StatusApi")
+  final class StatusController {
+
+    @Post("/create")
+    def create(@RequestBody body: EchoRequest): IO[ApiError, EchoResponse] =
+      ZIO.succeed(EchoResponse(1, body.text))
+
+    @Delete("/{id}")
+    def remove(@Path("id") id: Int): IO[ApiError, Unit] =
+      ZIO.unit
+
+    @Get("/teapot")
+    @io.okapi.core.annotations.Status(418)
+    def teapot: HelloResponse =
+      HelloResponse("tea")
+
+    @Get("/ok")
+    def ok: HelloResponse =
+      HelloResponse("ok")
+  }
+
+  @Controller("/api/errors")
+  @ApiTag("ErrorApi")
+  final class ErrorController {
+
+    @Get("/notfound")
+    def notFound: IO[ApiError, HelloResponse] =
+      ZIO.fail(ApiError.NotFound("missing"))
+
+    @Get("/conflict")
+    def conflict: IO[ApiError, HelloResponse] =
+      ZIO.fail(ApiError.Conflict("duplicate"))
+
+    @Get("/throttled")
+    def throttled: IO[ApiError, HelloResponse] =
+      ZIO.fail(ApiError.TooManyRequests("slow down"))
+  }
+
+  @Controller("/api/hc")
+  @ApiTag("HeaderCookieApi")
+  final class HeaderCookieController {
+
+    @Get("/header")
+    def header(@io.okapi.core.annotations.Header("X-Token") token: String): HelloResponse =
+      HelloResponse(s"token=$token")
+
+    @Get("/cookie")
+    def cookie(@Cookie("session") session: Option[String]): HelloResponse =
+      HelloResponse(s"session=${session.getOrElse("none")}")
+
+    @Get("/legacy")
+    @io.okapi.core.annotations.Deprecated()
+    def legacy: HelloResponse =
+      HelloResponse("old")
+  }
+
+  @Controller("/api/files")
+  @ApiTag("FileApi")
+  final class FileController {
+
+    @Get("/clean")
+    def clean: IO[ApiError, FileResponse] =
+      ZIO.succeed(FileResponse("hello".getBytes("UTF-8").nn, "my report.txt"))
+
+    @Get("/dirty")
+    def dirty: IO[ApiError, FileResponse] =
+      ZIO.succeed(FileResponse(Array[Byte](1, 2), "ev\"il\r\nname.txt"))
+  }
+
+  @Controller("/api/secure")
+  @ApiTag("SecureApi")
+  final class SecureController {
+
+    @Get("/me")
+    def me(@BearerAuth token: String): HelloResponse =
+      HelloResponse(s"token=$token")
+  }
+
+  @Controller("/api/ws")
+  @ApiTag("WsApi")
+  final class WsTestController {
+
+    @WebSocket("/echo")
+    def echo: WsPipe[String, String] =
+      stream => stream
+
+    @WebSocket("/chat/{room}")
+    def chat(
+      @Path("room") room: String,
+      @Query("user") user: Option[String],
+    ): WsPipe[String, String] =
+      stream => stream
+  }
+
   // ─── Test helpers ──────────────────────────────────────────────────────────
 
   private val testRoutes = ZioHttpInterpreter().toHttp(Okapi.endpoints[TestController])
@@ -252,7 +386,7 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
               testRoutes.runZIO(request).provideSome[Scope](ZLayer.succeed(new TestController))
             }
             body <- response.body.asString
-          } yield assertTrue(response.status == Status.Ok) &&
+          } yield assertTrue(response.status == Status.Created) &&
           assertTrue(body.contains("works")) &&
           assertTrue(body.contains("42"))
         },
@@ -552,6 +686,232 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
           } yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("id=99"))
         },
+      ),
+      suite("success status codes")(
+        test("POST defaults to 201 Created") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[StatusController])
+          val req = jsonRequest(Method.POST, "/api/status/create", """{"text":"hi"}""")
+          for {
+            resp <- ZIO.scoped(routes.runZIO(req).provideSome[Scope](ZLayer.succeed(new StatusController)))
+            body <- resp.body.asString
+          } yield assertTrue(resp.status.code == 201) && assertTrue(body.contains("hi"))
+        },
+        test("Unit body (DELETE) defaults to 204 No Content with empty body") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[StatusController])
+          for {
+            resp <- ZIO.scoped(
+              routes.runZIO(Request.delete("/api/status/7")).provideSome[Scope](ZLayer.succeed(new StatusController))
+            )
+            body <- resp.body.asString
+          } yield assertTrue(resp.status.code == 204) && assertTrue(body.isEmpty)
+        },
+        test("@Status overrides the inferred code") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[StatusController])
+          for {
+            resp <- ZIO.scoped(
+              routes.runZIO(Request.get("/api/status/teapot")).provideSome[Scope](ZLayer.succeed(new StatusController))
+            )
+          } yield assertTrue(resp.status.code == 418)
+        },
+        test("GET stays 200 OK") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[StatusController])
+          for {
+            resp <- ZIO.scoped(
+              routes.runZIO(Request.get("/api/status/ok")).provideSome[Scope](ZLayer.succeed(new StatusController))
+            )
+          } yield assertTrue(resp.status.code == 200)
+        },
+      ),
+      suite("error mapping")(
+        test("ApiError.NotFound -> 404 with code + message in body") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[ErrorController])
+          for {
+            resp <- ZIO.scoped(
+              routes.runZIO(Request.get("/api/errors/notfound")).provideSome[Scope](ZLayer.succeed(new ErrorController))
+            )
+            body <- resp.body.asString
+          } yield assertTrue(resp.status.code == 404) && assertTrue(body.contains("missing")) && assertTrue(
+            body.contains("404")
+          )
+        },
+        test("ApiError.Conflict -> 409") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[ErrorController])
+          for {
+            resp <- ZIO.scoped(
+              routes.runZIO(Request.get("/api/errors/conflict")).provideSome[Scope](ZLayer.succeed(new ErrorController))
+            )
+          } yield assertTrue(resp.status.code == 409)
+        },
+        test("ApiError.TooManyRequests -> 429") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[ErrorController])
+          for {
+            resp <- ZIO.scoped(
+              routes
+                .runZIO(Request.get("/api/errors/throttled"))
+                .provideSome[Scope](ZLayer.succeed(new ErrorController))
+            )
+          } yield assertTrue(resp.status.code == 429)
+        },
+      ),
+      suite("path & query mapping")(
+        test("@ApiTag sets the swagger tag (collision-free alias for @Tag)") {
+          val tags = Okapi.endpoints[MappingController].head.endpoint.info.tags
+          val hasTag = tags.contains("MapApi")
+          assertTrue(hasTag)
+        },
+        test("two path params split by a fixed segment + required & optional query all map") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[MappingController])
+          for {
+            resp <- ZIO.scoped(
+              routes
+                .runZIO(getRequest("/api/map/costam/hello/x/42?id=ABC&query=world"))
+                .provideSome[Scope](ZLayer.succeed(new MappingController))
+            )
+            body <- resp.body.asString
+          } yield assertTrue(resp.status.code == 200) && assertTrue(body.contains("p1=hello")) && assertTrue(
+            body.contains("p2=42")
+          ) && assertTrue(body.contains("id=ABC")) && assertTrue(body.contains("q=world"))
+        },
+        test("optional query omitted maps cleanly") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[MappingController])
+          for {
+            resp <- ZIO.scoped(
+              routes
+                .runZIO(getRequest("/api/map/costam/hi/x/7?id=Z"))
+                .provideSome[Scope](ZLayer.succeed(new MappingController))
+            )
+            body <- resp.body.asString
+          } yield assertTrue(resp.status.code == 200) && assertTrue(body.contains("p1=hi")) && assertTrue(
+            body.contains("p2=7")
+          ) && assertTrue(body.contains("id=Z")) && assertTrue(body.contains("q=none"))
+        },
+        test("@Path declared in reverse of URL order still maps correctly") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[MappingController])
+          for {
+            resp <- ZIO.scoped(
+              routes
+                .runZIO(getRequest("/api/map/r/foo/9?q=zzz"))
+                .provideSome[Scope](ZLayer.succeed(new MappingController))
+            )
+            body <- resp.body.asString
+          } yield assertTrue(resp.status.code == 200) && assertTrue(body.contains("a=foo")) && assertTrue(
+            body.contains("b=9")
+          ) && assertTrue(body.contains("q=zzz"))
+        },
+        test("unconsumed @Path interleaved with a query maps to the right arguments") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[MappingController])
+          for {
+            resp <- ZIO.scoped(
+              routes
+                .runZIO(getRequest("/api/map/u/foo/9?q=zzz"))
+                .provideSome[Scope](ZLayer.succeed(new MappingController))
+            )
+            body <- resp.body.asString
+          } yield assertTrue(resp.status.code == 200) && assertTrue(body.contains("a=foo")) && assertTrue(
+            body.contains("b=9")
+          ) && assertTrue(body.contains("q=zzz"))
+        },
+      ),
+      suite("headers, cookies, files, auth")(
+        test("@Header binds a request header") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[HeaderCookieController])
+          for {
+            resp <- ZIO.scoped(
+              routes
+                .runZIO(Request.get("/api/hc/header").addHeader("X-Token", "abc"))
+                .provideSome[Scope](ZLayer.succeed(new HeaderCookieController))
+            )
+            body <- resp.body.asString
+          } yield assertTrue(resp.status.code == 200) && assertTrue(body.contains("token=abc"))
+        },
+        test("@Cookie binds a request cookie") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[HeaderCookieController])
+          for {
+            resp <- ZIO.scoped(
+              routes
+                .runZIO(Request.get("/api/hc/cookie").addHeader("Cookie", "session=xyz"))
+                .provideSome[Scope](ZLayer.succeed(new HeaderCookieController))
+            )
+            body <- resp.body.asString
+          } yield assertTrue(resp.status.code == 200) && assertTrue(body.contains("session=xyz"))
+        },
+        test("@Deprecated marks the endpoint deprecated") {
+          val ep = Okapi.endpoints[HeaderCookieController].find(_.endpoint.showShort.contains("/api/hc/legacy")).get
+          val isDeprecated = ep.endpoint.info.deprecated
+          assertTrue(isDeprecated)
+        },
+        test("FileResponse sets Content-Disposition and returns the bytes") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[FileController])
+          for {
+            resp <- ZIO.scoped(
+              routes.runZIO(Request.get("/api/files/clean")).provideSome[Scope](ZLayer.succeed(new FileController))
+            )
+            body <- resp.body.asString
+          } yield {
+            val cd = resp.headers.get("Content-Disposition").getOrElse("")
+            val hasFilename = cd.contains("filename=\"my report.txt\"")
+            assertTrue(resp.status.code == 200) && assertTrue(hasFilename) && assertTrue(body == "hello")
+          }
+        },
+        test("FileResponse strips quotes and CR/LF from the filename") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[FileController])
+          for {
+            resp <- ZIO.scoped(
+              routes.runZIO(Request.get("/api/files/dirty")).provideSome[Scope](ZLayer.succeed(new FileController))
+            )
+          } yield {
+            val cd = resp.headers.get("Content-Disposition").getOrElse("")
+            val sanitized = cd.contains("filename=\"evilname.txt\"")
+            val noCr = !cd.contains("\r")
+            val noLf = !cd.contains("\n")
+            assertTrue(sanitized) && assertTrue(noCr) && assertTrue(noLf)
+          }
+        },
+        test("@BearerAuth passes the token to the controller") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[SecureController])
+          for {
+            resp <- ZIO.scoped(
+              routes
+                .runZIO(Request.get("/api/secure/me").addHeader("Authorization", "Bearer secret123"))
+                .provideSome[Scope](ZLayer.succeed(new SecureController))
+            )
+            body <- resp.body.asString
+          } yield assertTrue(resp.status.code == 200) && assertTrue(body.contains("token=secret123"))
+        },
+        test("@BearerAuth without a token is rejected (4xx)") {
+          val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[SecureController])
+          for {
+            resp <- ZIO.scoped(
+              routes.runZIO(Request.get("/api/secure/me")).provideSome[Scope](ZLayer.succeed(new SecureController))
+            )
+          } yield {
+            val rejected = resp.status.code == 401 || resp.status.code == 400
+            assertTrue(rejected)
+          }
+        },
+      ),
+      suite("websocket generation")(
+        test("websocket endpoints are generated for @WebSocket methods") {
+          val rendered = Okapi.endpoints[WsTestController].map(_.endpoint.showShort)
+          val hasEcho = rendered.exists(_.contains("/api/ws/echo"))
+          val hasChat = rendered.exists(_.contains("/api/ws/chat/{room}"))
+          assertTrue(hasEcho) && assertTrue(hasChat)
+        },
+        test("websocket chat endpoint carries its path and query inputs") {
+          val ep = Okapi.endpoints[WsTestController].find(_.endpoint.showShort.contains("/api/ws/chat")).get
+          val in = ep.endpoint.input.show
+          val hasRoom = in.contains("room")
+          val hasUser = in.contains("user")
+          assertTrue(hasRoom) && assertTrue(hasUser)
+        },
+      ),
+      suite("openapi spec")(
+        test("openApiYaml renders an OpenAPI document for the controllers") {
+          val yaml = Okapi.openApiYaml[Tuple1[StatusController]]("Okapi", "1.0.0")
+          val hasHeader = yaml.contains("openapi:")
+          val hasPath = yaml.contains("/api/status")
+          assertTrue(hasHeader) && assertTrue(hasPath)
+        }
       ),
     )
   }

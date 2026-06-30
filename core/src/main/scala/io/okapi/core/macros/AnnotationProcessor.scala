@@ -69,14 +69,19 @@ private[okapi] object AnnotationProcessor {
     val controllerTpe = TypeRepr.of[T]
     val controllerSym = controllerTpe.typeSymbol
     val basePath = annotationValue(controllerSym, "Controller").getOrElse("")
-    val tag = annotationValue(controllerSym, "Tag").filter(_.nonEmpty).getOrElse(controllerSym.name)
+    val tag = annotationValue(controllerSym, "ApiTag")
+      .filter(_.nonEmpty)
+      .orElse(annotationValue(controllerSym, "Tag").filter(_.nonEmpty))
+      .getOrElse(controllerSym.name)
 
     val restExprs = controllerSym
       .methodMembers
       .filter(m => m.annotations.exists(a => HttpAnnotations.contains(a.tpe.typeSymbol.name)))
       .sortBy { m =>
+        // route precedence: fixed segments before captures at each position (lexicographic over a 0/1 mask),
+        // so /books/stats is tried before /books/{id}, and /a/{x} before /{y}/b
         val ann = m.annotations.find(a => HttpAnnotations.contains(a.tpe.typeSymbol.name)).get
-        extractStringArg(ann).getOrElse("").split('/').count(s => s.startsWith("{") && s.endsWith("}"))
+        pathSpecificityKey(normalizePath(basePath, extractStringArg(ann).getOrElse("")))
       }
       .map { m =>
         val ann = m.annotations.find(a => HttpAnnotations.contains(a.tpe.typeSymbol.name)).get
@@ -210,10 +215,14 @@ private[okapi] object AnnotationProcessor {
       applyInput(endpointAfterInputs, requestBodyExpr(bodyTpe.asInstanceOf[TypeRepr], consumesMediaType).asTerm)
     }
 
-    val endpointWithOutputs = applyErrorOut(
-      applyOutput(endpointAfterBody, responseBodyExpr(outputType.asInstanceOf[TypeRepr], producesMediaType).asTerm),
-      errorOutputExpr.asTerm,
-    )
+    val outputTpe = outputType.asInstanceOf[TypeRepr]
+    val endpointWithBody = applyOutput(endpointAfterBody, responseBodyExpr(outputTpe, producesMediaType).asTerm)
+    val successStatus = resolveSuccessStatus(methodSym, httpMethod, outputTpe)
+    val endpointWithStatus = {
+      if successStatus == 200 then endpointWithBody
+      else applyOutput(endpointWithBody, fixedStatusOutputExpr(successStatus).asTerm)
+    }
+    val endpointWithOutputs = applyErrorOut(endpointWithStatus, errorOutputExpr.asTerm)
 
     val endpointWithMeta = applyMetadata(endpointWithOutputs, tag, summary, description, deprecated)
 
@@ -310,6 +319,30 @@ private[okapi] object AnnotationProcessor {
       List(endpointWithMeta, logicTerm),
     ).asExprOf[ZServerEndpoint[T, sttp.capabilities.WebSockets]]
   }
+
+  // ── Success status code ────────────────────────────────────────────────────
+
+  /** Explicit `@Status(code)` wins; otherwise 204 for a `Unit` body, 201 for POST, 200 for everything else. */
+  private def resolveSuccessStatus(
+    using q: Quotes
+  )(
+    methodSym: q.reflect.Symbol,
+    httpMethod: String,
+    outputTpe: q.reflect.TypeRepr,
+  ): Int = {
+    import q.reflect.*
+    statusAnnotationValue(methodSym).getOrElse {
+      if outputTpe =:= TypeRepr.of[Unit] then 204
+      else if httpMethod == "Post" then 201
+      else 200
+    }
+  }
+
+  private def statusAnnotationValue(using q: Quotes)(sym: q.reflect.Symbol): Option[Int] =
+    sym.annotations.collectFirst { case ann if ann.tpe.typeSymbol.name == "Status" => extractIntArg(ann) }.flatten
+
+  private def fixedStatusOutputExpr(using Quotes)(code: Int): Expr[EndpointOutput[Unit]] =
+    '{ sttp.tapir.statusCode(sttp.model.StatusCode(${ Expr(code) })) }
 
   // ── Shared endpoint helpers ────────────────────────────────────────────────
 
@@ -424,7 +457,14 @@ private[okapi] object AnnotationProcessor {
   ): q.reflect.Term = {
     import q.reflect.*
 
-    val userInputTypes = params.map(_.tpe.asInstanceOf[TypeRepr]) ++ body.toList.map(_.asInstanceOf[TypeRepr])
+    // the server-logic lambda receives Tapir's input tuple, which is in TAPIR order (consumed path params in URL
+    // order, then the remaining params in declaration order) — not declaration order. Reorder the param types to
+    // match the endpoint's actual input tuple; extractArgs then re-indexes back to declaration order by name.
+    val orderedParams = {
+      if tapirParamOrder.nonEmpty then tapirParamOrder.flatMap(n => params.find(_.name == n))
+      else params
+    }
+    val userInputTypes = orderedParams.map(_.tpe.asInstanceOf[TypeRepr]) ++ body.toList.map(_.asInstanceOf[TypeRepr])
     val inputType = tupleType(userInputTypes)
     val controllerOutputType = outputType.asInstanceOf[TypeRepr]
     val isFileResponse = controllerOutputType =:= TypeRepr.of[FileResponse]
@@ -537,59 +577,50 @@ private[okapi] object AnnotationProcessor {
 
   // ── Endpoint operations ────────────────────────────────────────────────────
 
-  private def applyInput(using q: Quotes)(endpoint: q.reflect.Term, input: q.reflect.Term): q.reflect.Term = {
+  private enum TransputSlot { case Input, ErrorOut, Output }
+
+  /** Shared logic behind addInput / addErrorOutput / addOutput: pulls the endpoint's 5 type parameters, widens the
+    * accumulator named by `slot`, and emits the matching OkapiRuntime call with the ParamConcat evidence. The 7 type
+    * arguments are identical across the three operations — only which accumulator feeds ParamConcat and the runtime
+    * method name differ.
+    */
+  private def applyTransput(
+    using q: Quotes
+  )(
+    endpoint: q.reflect.Term,
+    transput: q.reflect.Term,
+    slot: TransputSlot,
+  ): q.reflect.Term = {
     import q.reflect.*
-    val (si, cur, e, o, c) = endpointTypeParts(endpoint)
-    val next = transputValueType(input.tpe)
+    val (si, i, e, o, c) = endpointTypeParts(endpoint)
+    val (cur, runtimeName) = slot match {
+      case TransputSlot.Input => (i, "addInput")
+      case TransputSlot.ErrorOut => (e, "addErrorOutput")
+      case TransputSlot.Output => (o, "addOutput")
+    }
+    val next = transputValueType(transput.tpe)
     val combined = concatValueTypes(cur, next)
     val concat = summonParamConcat(cur, next)
     Apply(
       Apply(
         TypeApply(
-          runtimeSelect("addInput"),
-          List(Inferred(si), Inferred(cur), Inferred(e), Inferred(o), Inferred(c), Inferred(next), Inferred(combined)),
+          runtimeSelect(runtimeName),
+          List(Inferred(si), Inferred(i), Inferred(e), Inferred(o), Inferred(c), Inferred(next), Inferred(combined)),
         ),
-        List(endpoint, input),
+        List(endpoint, transput),
       ),
       List(concat),
     )
   }
 
-  private def applyOutput(using q: Quotes)(endpoint: q.reflect.Term, output: q.reflect.Term): q.reflect.Term = {
-    import q.reflect.*
-    val (si, i, e, cur, c) = endpointTypeParts(endpoint)
-    val next = transputValueType(output.tpe)
-    val combined = concatValueTypes(cur, next)
-    val concat = summonParamConcat(cur, next)
-    Apply(
-      Apply(
-        TypeApply(
-          runtimeSelect("addOutput"),
-          List(Inferred(si), Inferred(i), Inferred(e), Inferred(cur), Inferred(c), Inferred(next), Inferred(combined)),
-        ),
-        List(endpoint, output),
-      ),
-      List(concat),
-    )
-  }
+  private def applyInput(using q: Quotes)(endpoint: q.reflect.Term, input: q.reflect.Term): q.reflect.Term =
+    applyTransput(endpoint, input, TransputSlot.Input)
 
-  private def applyErrorOut(using q: Quotes)(endpoint: q.reflect.Term, errOut: q.reflect.Term): q.reflect.Term = {
-    import q.reflect.*
-    val (si, i, cur, o, c) = endpointTypeParts(endpoint)
-    val next = transputValueType(errOut.tpe)
-    val combined = concatValueTypes(cur, next)
-    val concat = summonParamConcat(cur, next)
-    Apply(
-      Apply(
-        TypeApply(
-          runtimeSelect("addErrorOutput"),
-          List(Inferred(si), Inferred(i), Inferred(cur), Inferred(o), Inferred(c), Inferred(next), Inferred(combined)),
-        ),
-        List(endpoint, errOut),
-      ),
-      List(concat),
-    )
-  }
+  private def applyOutput(using q: Quotes)(endpoint: q.reflect.Term, output: q.reflect.Term): q.reflect.Term =
+    applyTransput(endpoint, output, TransputSlot.Output)
+
+  private def applyErrorOut(using q: Quotes)(endpoint: q.reflect.Term, errOut: q.reflect.Term): q.reflect.Term =
+    applyTransput(endpoint, errOut, TransputSlot.ErrorOut)
 
   private def applyScalarOp(
     using q: Quotes
@@ -624,54 +655,51 @@ private[okapi] object AnnotationProcessor {
 
   // ── Parameter expressions ──────────────────────────────────────────────────
 
+  private def summonCodecOrAbort[C: Type](missing: => String)(using q: Quotes): Expr[C] =
+    Expr.summon[C].getOrElse(q.reflect.report.errorAndAbort(missing))
+
   private def parameterInputExpr(using q: Quotes)(param: ParamInfo): Expr[EndpointInput[?]] = {
-    param.tpe.asInstanceOf[q.reflect.TypeRepr].asType match {
+    val tpe = param.tpe.asInstanceOf[q.reflect.TypeRepr]
+    def missing(codec: String): String = {
+      s"Missing $codec for @${param.kind.annotationName}(\"${param.name}\") of type ${tpe.show}. " +
+        "Provide a Tapir Codec (e.g. import sttp.tapir.generic.auto.*)."
+    }
+    tpe.asType match {
       case '[t] =>
+        val name = Expr(param.name)
         param.kind match {
           case ParamKind.Path =>
-            Expr
-              .summon[Codec[String, t, CodecFormat.TextPlain]]
-              .map(codec => '{ EndpointInput.PathCapture(Some(${ Expr(param.name) }), $codec, EndpointIO.Info.empty) })
-              .getOrElse(
-                q.reflect
-                  .report
-                  .errorAndAbort(
-                    s"Missing Codec[String, ${param.tpe.asInstanceOf[q.reflect.TypeRepr].show}, CodecFormat.TextPlain] for @Path(\"${param.name}\")"
-                  )
-              )
+            val codec =
+              summonCodecOrAbort[Codec[String, t, CodecFormat.TextPlain]](missing("Codec[String, T, TextPlain]"))
+            '{ EndpointInput.PathCapture(Some($name), $codec, EndpointIO.Info.empty) }
           case ParamKind.Query =>
-            Expr
-              .summon[Codec[List[String], t, CodecFormat.TextPlain]]
-              .map(codec => '{ EndpointInput.Query(${ Expr(param.name) }, None, $codec, EndpointIO.Info.empty) })
-              .getOrElse(
-                q.reflect
-                  .report
-                  .errorAndAbort(
-                    s"Missing Codec[List[String], ${param.tpe.asInstanceOf[q.reflect.TypeRepr].show}, CodecFormat.TextPlain] for @Query(\"${param.name}\")"
-                  )
+            val codec = {
+              summonCodecOrAbort[Codec[List[String], t, CodecFormat.TextPlain]](
+                missing("Codec[List[String], T, TextPlain]")
               )
+            }
+            '{ EndpointInput.Query($name, None, $codec, EndpointIO.Info.empty) }
           case ParamKind.Header =>
-            Expr
-              .summon[Codec[List[String], t, CodecFormat.TextPlain]]
-              .map(codec => '{ EndpointIO.Header(${ Expr(param.name) }, $codec, EndpointIO.Info.empty) })
-              .getOrElse(
-                q.reflect
-                  .report
-                  .errorAndAbort(
-                    s"Missing Codec[List[String], ${param.tpe.asInstanceOf[q.reflect.TypeRepr].show}, CodecFormat.TextPlain] for @Header(\"${param.name}\")"
-                  )
+            val codec = {
+              summonCodecOrAbort[Codec[List[String], t, CodecFormat.TextPlain]](
+                missing("Codec[List[String], T, TextPlain]")
               )
+            }
+            '{ EndpointIO.Header($name, $codec, EndpointIO.Info.empty) }
           case ParamKind.Cookie =>
-            Expr
-              .summon[Codec[Option[String], t, CodecFormat.TextPlain]]
-              .map(codec => '{ EndpointInput.Cookie(${ Expr(param.name) }, $codec, EndpointIO.Info.empty) })
-              .getOrElse(
-                q.reflect
-                  .report
-                  .errorAndAbort(
-                    s"Missing Codec[Option[String], ${param.tpe.asInstanceOf[q.reflect.TypeRepr].show}, CodecFormat.TextPlain] for @Cookie(\"${param.name}\")"
-                  )
+            val codec = {
+              summonCodecOrAbort[Codec[Option[String], t, CodecFormat.TextPlain]](
+                missing("Codec[Option[String], T, TextPlain]")
               )
+            }
+            '{ EndpointInput.Cookie($name, $codec, EndpointIO.Info.empty) }
+          case ParamKind.BearerAuth =>
+            val codec = {
+              summonCodecOrAbort[Codec[List[String], t, CodecFormat.TextPlain]](
+                missing("Codec[List[String], T, TextPlain]")
+              )
+            }
+            '{ sttp.tapir.TapirAuth.bearer[t]()(using $codec) }
         }
     }
   }
@@ -759,6 +787,17 @@ private[okapi] object AnnotationProcessor {
     else if tpe =:= TypeRepr.of[FileResponse] then
       '{ sttp.tapir.byteArrayBody.and(sttp.tapir.header[String]("Content-Disposition")) }
     else if tpe <:< TypeRepr.of[Array[Byte]] then '{ sttp.tapir.byteArrayBody }
+    else if isZStreamOfByte(tpe) then
+      '{
+        EndpointIO.StreamBodyWrapper(
+          sttp
+            .tapir
+            .streamBody(sttp.capabilities.zio.ZioStreams)(
+              sttp.tapir.Schema.binary,
+              sttp.tapir.CodecFormat.OctetStream(),
+            )
+        )
+      }
     else if tpe <:< TypeRepr.of[String] then stringOutputForMediaType(mediaType)
     else {
       mediaType match {
@@ -1019,7 +1058,7 @@ private[okapi] object AnnotationProcessor {
           param.pos.fold(report.warning(msg))(report.warning(msg, _))
           ParamKind.Query
         }
-        val name = annotationValue(param, kind.annotationName).getOrElse(param.name)
+        val name = annotationValue(param, kind.annotationName).filter(_.nonEmpty).getOrElse(param.name)
         Some(ParamInfo(name, tpe, kind))
       }
     }
@@ -1041,12 +1080,12 @@ private[okapi] object AnnotationProcessor {
       case AppliedType(zioType, List(envType, errorType, successType))
            if zioType.typeSymbol == TypeRepr.of[ZIO[Any, Any, Any]].typeSymbol =>
         if (!(envType =:= TypeRepr.of[Any])) {
-          report.error(
+          report.errorAndAbort(
             s"Controller methods must return ZIO[Any, ApiError, A]. Unsupported environment: ${envType.show}"
           )
         }
         if (!(errorType <:< TypeRepr.of[ApiError])) {
-          report.error(
+          report.errorAndAbort(
             s"Controller methods must return ZIO[Any, ApiError, A]. Unsupported error type: ${errorType.show}"
           )
         }
@@ -1073,6 +1112,7 @@ private[okapi] object AnnotationProcessor {
       case ann if ann.tpe.typeSymbol.name == "Query" => ParamKind.Query
       case ann if ann.tpe.typeSymbol.name == "Header" => ParamKind.Header
       case ann if ann.tpe.typeSymbol.name == "Cookie" => ParamKind.Cookie
+      case ann if ann.tpe.typeSymbol.name == "BearerAuth" => ParamKind.BearerAuth
     }
   }
 
@@ -1083,22 +1123,43 @@ private[okapi] object AnnotationProcessor {
     }
   }
 
+  private def extractIntArg(using q: Quotes)(annotation: q.reflect.Term): Option[Int] = {
+    annotation match {
+      case q.reflect.Apply(_, List(q.reflect.Literal(q.reflect.IntConstant(value)))) => Some(value)
+      case _ => None
+    }
+  }
+
   private def normalizePath(basePath: String, methodPath: String): String = {
     (basePath.stripSuffix("/") + "/" + methodPath.stripPrefix("/"))
       .replaceAll("//+", "/")
       .nn
   }
 
+  /** Sort key ordering more specific routes first: a 0/1 mask over path segments (0 = fixed, 1 = capture) compared
+    * lexicographically, so fixed segments win at each position.
+    */
+  private def pathSpecificityKey(fullPath: String): String = {
+    fullPath
+      .split('/')
+      .nn
+      .toList
+      .filter(_.nonEmpty)
+      .map(s => if s.startsWith("{") && s.endsWith("}") then '1' else '0')
+      .mkString
+  }
+
   // ── Data model ─────────────────────────────────────────────────────────────
 
   private enum ParamKind {
-    case Path, Query, Header, Cookie
+    case Path, Query, Header, Cookie, BearerAuth
 
     def annotationName: String = this match {
       case Path => "Path"
       case Query => "Query"
       case Header => "Header"
       case Cookie => "Cookie"
+      case BearerAuth => "BearerAuth"
     }
   }
 
