@@ -1,7 +1,7 @@
 package io.okapi.core
 package annotations
 
-import scala.annotation.{ experimental, StaticAnnotation }
+import scala.annotation.StaticAnnotation
 
 final class Get(val path: String = "") extends StaticAnnotation
 final class Post(val path: String = "") extends StaticAnnotation
@@ -27,5 +27,3 @@ final class Summary(val text: String) extends StaticAnnotation
 
 final class WebSocket(val path: String = "") extends StaticAnnotation
 final class Deprecated() extends StaticAnnotation
-
-final class Service(val text: String) extends StaticAnnotation

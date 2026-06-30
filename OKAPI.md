@@ -20,7 +20,7 @@ No reflection at runtime. Everything is resolved during compilation.
 
 ```scala
 // build.sbt
-libraryDependencies += "io.okapi" %% "core" % "0.1.0-SNAPSHOT"
+libraryDependencies += "io.github.andrzej-swietek" %% "okapi-core" % "0.1.3"
 scalacOptions += "-Xmax-inlines:128"   // required for macro expansion depth
 ```
 

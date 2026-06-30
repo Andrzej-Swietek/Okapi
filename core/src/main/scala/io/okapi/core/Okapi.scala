@@ -1,10 +1,9 @@
 package io.okapi.core
 
-import scala.compiletime.erasedValue
-
 import zio.{ Task, ZIO, ZLayer }
 import zio.http.{ Response, Routes }
 
+import scala.compiletime.erasedValue
 import sttp.tapir.server.ziohttp.ZioHttpInterpreter
 import sttp.tapir.swagger.bundle.SwaggerInterpreter
 import sttp.tapir.ztapir.ZServerEndpoint
@@ -13,22 +12,24 @@ object Okapi {
 
   final class RegisterControllersPartiallyApplied[Types <: Tuple] {
     inline def apply[R, E, A](
-      effect: ZIO[Environment[Types] & R, E, A],
-    ): ZIO[R, E, A] =
+      effect: ZIO[Environment[Types] & R, E, A]
+    ): ZIO[R, E, A] = {
       effect.provideSomeLayer[R](
         controllerLayers[Types]
-          .asInstanceOf[ZLayer[R, Nothing, Environment[Types]]],
+          .asInstanceOf[ZLayer[R, Nothing, Environment[Types]]]
       )
+    }
   }
 
   final class RegisterServicesPartiallyApplied[Types <: Tuple] {
     inline def apply[R, E, A](
-      effect: ZIO[Environment[Types] & R, E, A],
-    ): ZIO[R, E, A] =
+      effect: ZIO[Environment[Types] & R, E, A]
+    ): ZIO[R, E, A] = {
       effect.provideSomeLayer[R](
         serviceLayers[Types]
-          .asInstanceOf[ZLayer[R, Nothing, Environment[Types]]],
+          .asInstanceOf[ZLayer[R, Nothing, Environment[Types]]]
       )
+    }
   }
 
   type Environment[Types <: Tuple] = Types match {
@@ -54,7 +55,8 @@ object Okapi {
   transparent inline def layer[T] =
     ZLayer.derive[T]
 
-  transparent inline def selectedEndpoints[Types <: Tuple]: List[ZServerEndpoint[Environment[Types], sttp.capabilities.WebSockets]] =
+  transparent inline def selectedEndpoints[Types <: Tuple]
+    : List[ZServerEndpoint[Environment[Types], sttp.capabilities.WebSockets]] = {
     inline erasedValue[Types] match {
       case _: (head *: EmptyTuple) =>
         endpoints[head].asInstanceOf[List[ZServerEndpoint[Environment[Types], sttp.capabilities.WebSockets]]]
@@ -62,14 +64,16 @@ object Okapi {
         (endpoints[head] ++ selectedEndpoints[tail])
           .asInstanceOf[List[ZServerEndpoint[Environment[Types], sttp.capabilities.WebSockets]]]
     }
+  }
 
-  transparent inline def routes[Types <: Tuple]: Routes[Environment[Types], Response] =
+  transparent inline def routes[Types <: Tuple]: Routes[Environment[Types], Response] = {
     inline erasedValue[Types] match {
       case _: (head *: EmptyTuple) =>
         httpRoutes[head].asInstanceOf[Routes[Environment[Types], Response]]
       case _: (head *: tail) =>
         (httpRoutes[head] ++ routes[tail]).asInstanceOf[Routes[Environment[Types], Response]]
     }
+  }
 
   inline def swagger[Types <: Tuple](
     title: String,

@@ -1,12 +1,13 @@
 package io.okapi.core
 
+import zio.*
+import zio.stream.ZStream
+
 import io.okapi.core.http.ApiError
 import io.okapi.core.http.ApiError.ApiErrorResponse
 import io.okapi.core.http.FileResponse
 import sttp.tapir.*
 import sttp.tapir.ztapir.*
-import zio.*
-import zio.stream.ZStream
 
 object OkapiRuntime {
 
@@ -32,12 +33,12 @@ object OkapiRuntime {
     endpoint.errorOut(errorOutput)
 
   def mapApiErrorEffect[R, A](
-    effect: ZIO[R, ApiError, A],
+    effect: ZIO[R, ApiError, A]
   ): ZIO[R, (sttp.model.StatusCode, ApiErrorResponse), A] =
     effect.mapError(error => (error.status, ApiError.toResponse(error)))
 
   def serviceWithMappedZio[T: zio.Tag, A](
-    f: T => ZIO[Any, (sttp.model.StatusCode, ApiErrorResponse), A],
+    f: T => ZIO[Any, (sttp.model.StatusCode, ApiErrorResponse), A]
   ): ZIO[T, (sttp.model.StatusCode, ApiErrorResponse), A] =
     ZIO.serviceWithZIO[T](f)
 
@@ -66,27 +67,36 @@ object OkapiRuntime {
     sttp.tapir.formBody[T](using codec)
 
   def multipartBodyInput[T](
-    codec: MultipartCodec[T],
+    codec: MultipartCodec[T]
   ): EndpointIO.Body[Seq[RawPart], T] =
     sttp.tapir.multipartBody[T](using codec)
 
-  def xmlStringBody: EndpointIO.Body[String, String] =
-    sttp.tapir.stringBodyAnyFormat(
-      Codec.id[String, CodecFormat.Xml](CodecFormat.Xml(), Schema.string),
-      java.nio.charset.StandardCharsets.UTF_8.nn,
-    )
+  def xmlStringBody: EndpointIO.Body[String, String] = {
+    sttp
+      .tapir
+      .stringBodyAnyFormat(
+        Codec.id[String, CodecFormat.Xml](CodecFormat.Xml(), Schema.string),
+        java.nio.charset.StandardCharsets.UTF_8.nn,
+      )
+  }
 
-  def jsStringBody: EndpointIO.Body[String, String] =
-    sttp.tapir.stringBodyAnyFormat(
-      Codec.id[String, CodecFormat.TextJavascript](CodecFormat.TextJavascript(), Schema.string),
-      java.nio.charset.StandardCharsets.UTF_8.nn,
-    )
+  def jsStringBody: EndpointIO.Body[String, String] = {
+    sttp
+      .tapir
+      .stringBodyAnyFormat(
+        Codec.id[String, CodecFormat.TextJavascript](CodecFormat.TextJavascript(), Schema.string),
+        java.nio.charset.StandardCharsets.UTF_8.nn,
+      )
+  }
 
-  def eventStreamBody: EndpointIO.Body[String, String] =
-    sttp.tapir.stringBodyAnyFormat(
-      Codec.id[String, CodecFormat.TextEventStream](CodecFormat.TextEventStream(), Schema.string),
-      java.nio.charset.StandardCharsets.UTF_8.nn,
-    )
+  def eventStreamBody: EndpointIO.Body[String, String] = {
+    sttp
+      .tapir
+      .stringBodyAnyFormat(
+        Codec.id[String, CodecFormat.TextEventStream](CodecFormat.TextEventStream(), Schema.string),
+        java.nio.charset.StandardCharsets.UTF_8.nn,
+      )
+  }
 
   def attachServerLogic[T, I, E, O](
     endpoint: Endpoint[Unit, I, E, O, Any],
@@ -95,35 +105,72 @@ object OkapiRuntime {
     endpoint.zServerLogic(logic).asInstanceOf[ZServerEndpoint[T, sttp.capabilities.WebSockets]]
 
   def attachWsServerLogic[T, I, E, In, Out](
-    endpoint: Endpoint[Unit, I, E, ZStream[Any, Throwable, In] => ZStream[Any, Throwable, Out], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets],
+    endpoint: Endpoint[
+      Unit,
+      I,
+      E,
+      ZStream[Any, Throwable, In] => ZStream[Any, Throwable, Out],
+      sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets,
+    ],
     logic: I => ZIO[T, E, ZStream[Any, Throwable, In] => ZStream[Any, Throwable, Out]],
   ): ZServerEndpoint[T, sttp.capabilities.WebSockets] =
     endpoint.zServerLogic(logic).asInstanceOf[ZServerEndpoint[T, sttp.capabilities.WebSockets]]
 
-  private def textWsBody =
-    sttp.tapir.ztapir.webSocketBody[String, CodecFormat.TextPlain, String, CodecFormat.TextPlain](sttp.capabilities.zio.ZioStreams)
+  private def textWsBody = {
+    sttp
+      .tapir
+      .ztapir
+      .webSocketBody[String, CodecFormat.TextPlain, String, CodecFormat.TextPlain](sttp.capabilities.zio.ZioStreams)
+  }
 
-  private def binaryWsBody =
-    sttp.tapir.ztapir.webSocketBody[Array[Byte], CodecFormat.OctetStream, Array[Byte], CodecFormat.OctetStream](sttp.capabilities.zio.ZioStreams)
+  private def binaryWsBody = {
+    sttp
+      .tapir
+      .ztapir
+      .webSocketBody[Array[Byte], CodecFormat.OctetStream, Array[Byte], CodecFormat.OctetStream](
+        sttp.capabilities.zio.ZioStreams
+      )
+  }
 
   def addTextWsOutput[S, I, E](
-    endpoint: Endpoint[S, I, E, Unit, Any],
-  ): Endpoint[S, I, E, WsPipe[String, String], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets] =
-    endpoint.out(textWsBody)
-      .asInstanceOf[Endpoint[S, I, E, WsPipe[String, String], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets]]
+    endpoint: Endpoint[S, I, E, Unit, Any]
+  ): Endpoint[S, I, E, WsPipe[String, String], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets] = {
+    endpoint
+      .out(textWsBody)
+      .asInstanceOf[Endpoint[
+        S,
+        I,
+        E,
+        WsPipe[String, String],
+        sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets,
+      ]]
+  }
 
   def addBinaryWsOutput[S, I, E](
-    endpoint: Endpoint[S, I, E, Unit, Any],
-  ): Endpoint[S, I, E, WsPipe[Array[Byte], Array[Byte]], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets] =
-    endpoint.out(binaryWsBody)
-      .asInstanceOf[Endpoint[S, I, E, WsPipe[Array[Byte], Array[Byte]], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets]]
+    endpoint: Endpoint[S, I, E, Unit, Any]
+  ): Endpoint[S, I, E, WsPipe[Array[Byte], Array[Byte]], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets] = {
+    endpoint
+      .out(binaryWsBody)
+      .asInstanceOf[Endpoint[
+        S,
+        I,
+        E,
+        WsPipe[Array[Byte], Array[Byte]],
+        sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets,
+      ]]
+  }
 
   def mapFileResponseApiError[R](
-    effect: ZIO[R, ApiError, FileResponse],
-  ): ZIO[R, (sttp.model.StatusCode, ApiErrorResponse), (Array[Byte], String)] =
+    effect: ZIO[R, ApiError, FileResponse]
+  ): ZIO[R, (sttp.model.StatusCode, ApiErrorResponse), (Array[Byte], String)] = {
     effect
-      .map(fr => (fr.data, s"""attachment; filename="${fr.filename}""""))
+      .map { fr =>
+        // strip quotes and CR/LF so a user-supplied filename cannot break out of the header value
+        val safeName = fr.filename.replaceAll("[\"\\r\\n]", "").nn
+        (fr.data, s"""attachment; filename="$safeName"""")
+      }
       .mapError(e => (e.status, ApiError.toResponse(e)))
+  }
 
   def liftPure[A](value: A): ZIO[Any, Nothing, A] =
     ZIO.succeed(value)
