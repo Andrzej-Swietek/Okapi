@@ -1,3 +1,5 @@
+import xerial.sbt.Sonatype.sonatypeCentralHost
+
 ThisBuild / scalaVersion := "3.6.4"
 
 val zioVersion = "2.1.16"
@@ -8,7 +10,8 @@ val zioLoggingVersion = "2.5.0"
 
 lazy val core = (project in file("."))
   .settings(
-    name := "core",
+    name := "okapi-core",
+    description := "Okapi: annotation-driven HTTP API library for ZIO HTTP and Tapir, powered by Scala 3 macros.",
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio" % zioVersion,
       "dev.zio" %% "zio-http" % zioHttpVersion,
@@ -41,13 +44,29 @@ lazy val core = (project in file("."))
     externalResolvers ++= Seq(
       Resolver.defaultLocal
     ),
-    publishTo := Some("GitHub Package Registry" at "https://maven.pkg.github.com/Andrzej-Swietek/Okapi"),
+    // ---- Maven Central (Sonatype Central Portal) publishing ----
+    publishTo := sonatypePublishToBundle.value,
     publishMavenStyle := true,
-    credentials += Credentials(
-      "GitHub Package Registry",
-      "maven.pkg.github.com",
-      "Andrzej-Swietek",
-      sys.env.getOrElse("GITHUB_TOKEN", ""),
+    sonatypeCredentialHost := sonatypeCentralHost,
+    sonatypeProfileName := "io.github.andrzej-swietek",
+    licenses := Seq(
+      "Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0.txt")
+    ),
+    homepage := Some(url("https://github.com/Andrzej-Swietek/Okapi")),
+    scmInfo := Some(
+      ScmInfo(
+        url("https://github.com/Andrzej-Swietek/Okapi"),
+        "scm:git:https://github.com/Andrzej-Swietek/Okapi.git",
+        "scm:git:git@github.com:Andrzej-Swietek/Okapi.git",
+      )
+    ),
+    developers := List(
+      Developer(
+        id = "Andrzej-Swietek",
+        name = "Andrzej Świętek",
+        email = "aswietek@avsystem.com",
+        url = url("https://github.com/Andrzej-Swietek"),
+      )
     ),
   )
 
