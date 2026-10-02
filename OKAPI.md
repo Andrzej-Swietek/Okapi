@@ -12,7 +12,7 @@ At compile time, Okapi's macro inspects annotated classes and generates:
 2. ZIO HTTP `Routes` ready to plug into `Server.serve`
 3. An automatic `ZLayer` that resolves the entire dependency tree (controllers + services + repos)
 
-No reflection at runtime. Everything is resolved during compilation.
+The endpoints, routes and layer are generated during compilation, without runtime reflection.
 
 ---
 
@@ -24,16 +24,7 @@ libraryDependencies += "io.github.andrzej-swietek" %% "okapi-zio" % "0.2.0"   //
 scalacOptions += "-Xmax-inlines:128"   // required for macro expansion depth
 ```
 
-| Module | Contents | Depends on ZIO |
-|--------|----------|----------------|
-| `okapi-core` | annotations, macros, runtime, `JsoniterCodec`, `ApiResponse` | no |
-| `okapi-openapi` | OpenAPI JSON/YAML documents and Swagger UI endpoints | no |
-| `okapi-metrics` | endpoint metrics: a per-request callback and Prometheus | no |
-| `okapi-client` | HTTP clients generated from annotated API traits | no |
-| `sbt-okapi` | sbt plugin: writes the OpenAPI document and generates a `<name>-client` module | — |
-| `okapi-zio` | ZIO HTTP routes, `ZStream` / SSE / WebSocket bodies, `ZLayer` wiring (brings `okapi-core` and `okapi-openapi`) | yes |
-
-Requires Scala 3.6+.
+The modules are listed in the [README](README.md#installation).
 
 ---
 
@@ -45,7 +36,7 @@ Requires Scala 3.6+.
 |------------|---------|
 | `@Controller("/base/path")` | Marks a class as a controller; sets the path prefix |
 | `@Tag("GroupName")` | Groups endpoints under a Swagger tag |
-| `@ApiTag("GroupName")` | Same as `@Tag`, but collision-free when `import zio.*` is in scope (it also exports `zio.Tag`) |
+| `@ApiTag("GroupName")` | Same as `@Tag`, without the `zio.Tag` collision (see [Known gotchas](#known-gotchas)) |
 
 ### Method-level (HTTP verbs)
 
@@ -71,8 +62,8 @@ Path templates support `{paramName}` placeholders: `@Get("/{id}/reviews")` or `@
 | `@RequestBody` | Request body (dispatched by `@Consumes`) |
 | `@BearerAuth` | Binds the `Authorization: Bearer <token>` header to a `String` parameter and advertises a bearer security scheme |
 
-`@Query`, `@Header` and `@Cookie` parameters are optional when typed `Option[T]` or given a default value (see
-[Parameters](#parameters)); `@Path` parameters are always required.
+`@Query`, `@Header` and `@Cookie` parameters typed `Option[T]` are optional; for default values see
+[Parameters](#parameters).
 
 ### Documentation
 
@@ -102,8 +93,9 @@ verbs. Override it explicitly:
 
 ## Supported media types
 
-A declared `@Consumes` / `@Produces` is used **exactly** as the body's `Content-Type` (it is validated at compile
-time). Without one, each body kind has its default.
+A declared `@Consumes` / `@Produces` is validated at compile time and used **exactly** as the body's `Content-Type`,
+except on a JSON body of a case class, which is sent as `application/json`. Without one, each body kind has its
+default.
 
 ### Request body (`@Consumes`)
 
@@ -114,7 +106,7 @@ time). Without one, each body kind has its default.
 | case class | `multipart/form-data` | multipart (`MultipartCodec[T]`) |
 | `String` | none → `text/plain`; otherwise the declared one (`text/html`, `application/xml`, `application/json`, ...) | raw string |
 | `Array[Byte]` | none → `application/octet-stream`; otherwise the declared one | raw bytes |
-| `ZStream[Any, Throwable, Byte]` (okapi-zio) | — | binary stream |
+| `ZStream[Any, Throwable, Byte]` (okapi-zio) | none → `application/octet-stream`; otherwise the declared one | binary stream |
 
 Any other combination (e.g. a case class with `@Consumes("text/csv")`) is a compile error.
 
@@ -128,7 +120,8 @@ Any other combination (e.g. a case class with `@Consumes("text/csv")`) is a comp
 | `Array[Byte]` | none → `application/octet-stream`; otherwise the declared one (`image/png`, `application/pdf`, ...) | raw bytes |
 | `FileResponse` | as for `Array[Byte]` | bytes + `Content-Disposition` |
 | `Unit` | — | empty, `204` |
-| `ZStream[Any, Throwable, Byte]` (okapi-zio) | — | binary stream |
+| `ZStream[Any, Throwable, Byte]` (okapi-zio) | none → `application/octet-stream`; otherwise the declared one | binary stream |
+| `ZStream[Any, Throwable, ServerSentEvent]` (okapi-zio) | `text/event-stream` | server-sent events |
 
 A case class with a text or binary media type (e.g. `@Produces("text/plain") def x: Book`) is a compile error:
 return a `String` / `Array[Byte]` instead.
@@ -148,7 +141,7 @@ The JSON codec of a body type `T` is the first found of:
    final case class Book(id: Int, title: String) derives JsoniterCodec
    ```
    **Sealed hierarchies and enums** work the same way and carry their case name in a `"type"` field
-   (`JsoniterCodec.Discriminator`) — in the JSON *and* in the OpenAPI schema, so the docs match what is sent:
+   (`JsoniterCodec.Discriminator`), in the JSON *and* in the OpenAPI schema:
    ```scala
    sealed trait Payment derives JsoniterCodec            // {"type": "Card", "number": "4111"}
    final case class Card(number: String) extends Payment
@@ -158,7 +151,7 @@ The JSON codec of a body type `T` is the first found of:
    Or, with a custom configuration, `given JsonValueCodec[Book] = JsonCodecMaker.make(config)` (then provide a
    matching `Schema` if the format differs from the default). Containers of such
    types (`List[Book]`, `Option[Book]`, `Map[String, Book]`, ...) need no codec of their own: Okapi makes one;
-3. with **okapi-zio**, a zio-json `JsonCodec[T]` (`derives JsonCodec`) — so existing ZIO code keeps working.
+3. with **okapi-zio**, a zio-json `JsonCodec[T]` (`derives JsonCodec`).
 
 The OpenAPI schema comes with the codec: a `JsoniterCodec` carries its own; for a plain `JsonValueCodec` or a
 zio-json codec it is a `Schema[T]` in scope, else derived for case classes, sealed hierarchies and enums.
@@ -169,7 +162,7 @@ independent of the library used for other bodies.
 
 ## WebSocket support
 
-Annotate a method with `@WebSocket("/path")` to create a WebSocket endpoint. The method must return `WsPipe[In, Out]` (a stream transformer).
+Annotate a method with `@WebSocket("/path")` to create a WebSocket endpoint. The method returns a `WsPipe[In, Out]` (a stream transformer), directly or from an effect (see the return types below).
 
 Each side of the pipe is encoded on its own:
 
@@ -238,7 +231,7 @@ Failures are mapped as follows:
 | Failure | Response |
 |---------|----------|
 | an `ApiError` (see below) | its status, body `{"code": ..., "message": ...}` |
-| `ApiErrorException(apiError)` — failed, or died with via `.orDie` | the wrapped `ApiError` |
+| `ApiErrorException(apiError)` — failed with, or died with (e.g. via `.orDie`) | the wrapped `ApiError` |
 | any other `Throwable`, or a defect (`ZIO.die`) | `500 Internal server error`; the cause is logged with `ZIO.logErrorCause`, its message is **not** sent |
 | interruption | propagated |
 
@@ -315,6 +308,12 @@ Okapi.registerOkapiControllers[Controllers](effect)
 `Controllers` is a tuple type: `(BookController, UserController, AdminController)`. `R` is what the
 controllers' methods need from the ZIO environment (see [Return types](#return-types-http-endpoints)).
 
+Each endpoint is named after its controller method, and the name is its OpenAPI operation id (`getBook`). A name
+several endpoints share is prefixed with the endpoint's tag in the document (`stats` in `Books` → `booksStats`). An
+operation with a streamed request or response body (`ZStream`, SSE) carries Tapir codegen's
+`x-tapir-codegen-directives: [force-req-body-streaming]` / `[force-resp-body-streaming]`, marking the body as a stream
+for client generators.
+
 ---
 
 ## Server options, CORS and metrics
@@ -349,8 +348,8 @@ val app = Okapi.routes[Controllers](options) ++ ZioHttpInterpreter().toHttp(metr
 class name), `status` the status class (`2xx`, ...). Pass `namespace` / `registry` to change the prefix or the
 `PrometheusRegistry`.
 
-For another metrics system, `OkapiMetrics.interceptor[F](record)` calls `record` once per request with a
-`RequestRecord(method, path, controller, status, duration)` — `path` again the route template:
+For another metrics system, `OkapiMetrics.interceptor[F](record)` calls `record` once per request matching an
+endpoint, with a `RequestRecord(method, path, controller, status, duration)` — `path` again the route template:
 
 ```scala
 val options = ZioHttpServerOptions
@@ -386,7 +385,7 @@ Each type instantiation is its own dependency (`Store[User]` and `Store[Book]` g
 
 Example:
 ```scala
-// Instead of:
+// Without autoLayer:
 Server.serve(app).provide(
   ZLayer.succeed(serverConfig),
   Server.live,
@@ -397,7 +396,7 @@ Server.serve(app).provide(
   // ... everything manually listed
 )
 
-// Just:
+// With autoLayer:
 Server.serve(app).provide(
   ZLayer.succeed(serverConfig),
   Server.live,
@@ -414,8 +413,7 @@ Server.serve(app).provide(
 - **Default values** (`@Query("limit") limit: Int = 20`) make `@Query` / `@Header` / `@Cookie` parameters optional:
   when absent, the method's own default is used. `@Path` / `@BearerAuth` are always required.
 - `@Path` parameters missing from the template are appended as trailing path captures.
-- **No 22-parameter limit**: Tapir flattens at most 22 inputs into one tuple, so larger endpoints are transparently
-  split into groups of inputs (up to 484 in total); the URL and the OpenAPI docs are unaffected.
+- **No 22-parameter limit**: an endpoint takes up to 484 request inputs.
 - **Inheritance**: annotations are inherited from overridden methods (and their parameters) and from base classes,
   so an annotated API trait can be implemented by an unannotated class.
 
@@ -432,8 +430,8 @@ effect that has an `OkapiEffect[F]`:
 ```scala
 trait OkapiEffect[F[_]] {
   def monad: sttp.monad.MonadError[F]
-  def pure[A](value: => A): F[A]
-  def fail[A](error: ApiError): F[A]
+  def pure[A](value: => A): F[A] = monad.eval(value)
+  def fail[A](error: ApiError): F[A] = monad.error(ApiErrorException(error))
   def attempt[A](fa: F[A]): F[Either[ApiError, A]]
 }
 ```
@@ -473,8 +471,10 @@ val books: BookApi[IO] = OkapiClient[IO].of[BookApi[IO]](uri"http://books:8080",
 books.get(1)                                                                              // IO[Book]
 ```
 
-Every abstract method must be routed and return `F[A]`. An error response fails `F` with the `ApiError` for its status
-(`ApiErrorException` for `Throwable`-based effects); `ApiResponse` and `FileResponse` results work as on the server.
+Every routed method must return `F[A]`; calling an abstract method without a routing annotation throws
+`UnsupportedOperationException`. An error response fails `F` with `OkapiEffect.fail` of the `ApiError` for its status
+(an `ApiErrorException` with `OkapiEffect.fromMonadError`); `ApiResponse` and `FileResponse` results work as on the
+server.
 Put the trait (and its models) in a small module both the server and its clients depend on.
 
 ### Generated files (`sbt-okapi`)
@@ -490,33 +490,74 @@ addSbtPlugin("io.github.andrzej-swietek" % "sbt-okapi" % "0.2.0")
 lazy val api = project
   .enablePlugins(OkapiPlugin)
   .settings(okapiSpec := "com.example.ApiSpec.yaml")   // object ApiSpec { def yaml = Okapi.openApiYaml[Controllers]("API", "1") }
-
-lazy val apiClient = project.in(file("api-client"))    // the generated module
 ```
 
-| Task / setting | |
-|----------------|--|
-| `okapiSpecFile` | writes the document to `target/okapi/openapi.yaml` (runs `okapiSpec` on the test classpath) |
-| `okapiGenerateClient` | writes Tapir endpoints, models with jsoniter-scala codecs, and a `build.sbt` (if absent) to `okapiClientDirectory` |
-| `okapiClientName` | `<name>-client` |
-| `okapiClientPackage` / `okapiClientObject` | `<name>.client` / `<Name>Endpoints` |
-| `okapiClientDirectory` | `<base>/<okapiClientName>` |
-| `okapiClientStreaming` | streams for binary bodies: `fs2` (default) or `zio` |
+`sbt okapiGenerateClient` writes a module depending on sttp client4 (with its `fs2` or `zio` module, see below) and
+jsoniter-scala:
 
-Call a generated endpoint with Tapir's sttp client interpreter:
-`SttpClientInterpreter().toClientThrowDecodeFailures(ApiEndpoints.getApiBooksId, Some(uri), backend)(id)`; error
-responses come back as `Left(ApiErrorResponse(...))`. The same `openapi.yaml` feeds other generators for clients in
+```
+api-client/
+  build.sbt
+  src/main/scala/api/client/
+    ApiClient.scala             trait ApiClient[F[_]] { def books: BooksRoutes[F]; def covers: CoversRoutes[F] }
+    BooksRoutes.scala           trait BooksRoutes[F[_]] { def getBook(id: Int): F[Book]; ... }   one per controller
+    ApiException.scala          a non-2xx response: status, body, and the decoded ApiErrorResponse
+    models/Book.scala           case classes, enums and sealed traits, with jsoniter-scala codecs
+    impl/SttpApiClient.scala    final class SttpApiClient[F[_]](backend: StreamBackend[F, Fs2Streams[F]], baseUri: Uri, headers: Seq[Header] = Nil)
+    impl/SttpBooksRoutes.scala  one per controller, over a shared SttpTransport
+```
+
+```scala
+val api: ApiClient[Identity] = SttpApiClient(DefaultSyncBackend(), uri"http://localhost:8080")   // okapiClientStreaming := "none"
+api.books.getBook(1)                 // Book; a 404 throws ApiException(404, ...) with error = Some(ApiErrorResponse(...))
+```
+
+`F` is the backend's effect — a non-2xx response fails it with `ApiException`. Streamed bodies and server-sent events
+follow `okapiClientStreaming`:
+
+| `okapiClientStreaming` | streamed body | `text/event-stream` response | backend |
+|------------------------|---------------|------------------------------|---------|
+| `fs2` (default) | `fs2.Stream[F, Byte]` | `F[fs2.Stream[F, ServerSentEvent]]` | `StreamBackend[F, Fs2Streams[F]]`, e.g. `HttpClientFs2Backend` |
+| `zio` | `ZStream[Any, Throwable, Byte]` | `Task[ZStream[Any, Throwable, ServerSentEvent]]` | `StreamBackend[Task, ZioStreams]`, e.g. `HttpClientZioBackend` |
+| `none` | `Array[Byte]` | `F[List[ServerSentEvent]]`, once the response ends | any `Backend[F]`, e.g. `DefaultSyncBackend` |
+
+A response stream holds its connection until it is consumed. The generated `build.sbt` brings sttp's `fs2` or `zio`
+module; one written before the mode changed keeps its dependencies. A trait per
+controller (the operations' first tag) holds its operations, named by their operation ids, without a leading tag
+prefix (`booksStats` → `stats`). Optional parameters default to `None` (lists to `Nil`) and come last; JSON field
+names that are not identifiers are mapped with `@named`. A string enum becomes an `enum` carrying its wire value, and a
+`oneOf` with a discriminator a sealed trait with its cases in one file.
+
+The generator (`okapi-codegen`) runs on the project's Test classpath, where `okapiSpec` is evaluated; the plugin then
+formats the sources with scalafmt.
+
+| Setting | Default |
+|---------|---------|
+| `okapiClientDirectory` | `<base>/<okapiClientName>`: the module, holding its `build.sbt` |
+| `okapiClientSourceDirectory` | `<okapiClientDirectory>/src/main/scala` |
+| `okapiClientName` / `okapiClientOrganization` / `okapiClientVersion` / `okapiClientScalaVersion` | `<name>-client` / the project's |
+| `okapiClientBuildFile` | `if-missing`; `always` rewrites it, `never` leaves it to an existing build (a project of the same build, say) |
+| `okapiClientPackage` | `<name>.client`; `okapiClientModelsPackage` / `okapiClientImplPackage` (`models` / `impl`) nest in it |
+| `okapiClientApi` / `okapiClientTitle` | `<Name>Client`: the root trait (its implementation is `Sttp<Name>Client`) / its scaladoc name |
+| `okapiClientSplitByController` | `true`; `false` puts every operation on the root trait |
+| `okapiClientControllerSuffix` | `Routes`: `Covers` → `CoversRoutes` |
+| `okapiClientStreaming` | `fs2`; `zio` or `none`, see above |
+| `okapiClientSeparateModels` | `true`; `false` writes one `models/Models.scala` |
+| `okapiClientScalafmtConfig` | the build's `.scalafmt.conf`, else a built-in one (Scala 3, 120 columns) |
+| `okapiClientClean` | `true`: the client's package directory is replaced on every run |
+
+`okapiSpecFile` writes the document to `target/okapi/openapi.yaml`; the same file feeds generators for clients in
 other languages. Run `okapiGenerateClient` and the client module's compilation in separate sbt sessions, since sbt
 reads the generated `build.sbt` on start.
 
-`example-client/` is generated this way from `okapi-example/` (`sbt okapiGenerateClient` there), plus a `Main`
-calling the running example: `cd okapi-example && sbt run`, then `cd example-client && sbt run`.
+`example/client/` is generated this way from `example/server/` (`sbt okapiGenerateClient` there), plus a `Main`
+calling the running example: `cd example/server && sbt run`, then `cd example/client && sbt run`.
 
 ---
 
 ## Upgrading from 0.1.x
 
-- Depend on `okapi-zio` (it brings `okapi-core`); package names and the `Okapi` API are unchanged.
+- Depend on `okapi-zio` (it brings `okapi-core`); package names and the `Okapi` method names are unchanged.
 - zio-json `derives JsonCodec` keeps working with okapi-zio; `okapi-core` alone no longer depends on zio-json, and
   `ApiErrorResponse` no longer has a zio-json `JsonCodec` given.
 - A case class body with a media type other than JSON or a form (e.g. `@Produces("text/plain") def x: Book`) is
@@ -598,10 +639,10 @@ object Main extends ZIOAppDefault {
 
 - `routes[Controllers]` and `swagger[Controllers]` must be `lazy val` (not `val`) in `object Main` to avoid JVM `Method too large` error when there are many endpoints.
 
-- `@Tag` from `io.okapi.core.annotations` collides with `zio.Tag` under `import zio.*`. Either use `import zio.{ IO, ZIO }`, or use the **`@ApiTag`** alias, which never collides.
+- `@Tag` from `io.okapi.core.annotations` collides with `zio.Tag` under `import zio.*`. Either use `import zio.{ IO, ZIO }`, or use the **`@ApiTag`** alias.
 
 - `java.lang.System.currentTimeMillis()` — `import zio.*` shadows `System` with `zio.System`. Use the fully qualified name.
 
-- After changing any module, run `sbt publishLocal` from the project root before compiling `okapi-example/`.
+- After changing any module, run `sbt publishLocal` from the project root before compiling `example/server/`.
 
 - Annotation arguments must be known at compile time: literals (`@Get("/x")`, `@Get(path = "/x")`) or `final val` constants; anything else is a compile error.

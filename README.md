@@ -6,8 +6,8 @@
 **Annotation-driven HTTP APIs for Scala 3 — [ZIO HTTP](https://zio.dev/zio-http/) + [Tapir](https://tapir.softwaremill.com/), with zero boilerplate.**
 
 Okapi is a Scala 3 macro library that turns annotated controller classes into fully-wired Tapir
-endpoints served by ZIO HTTP, generates Swagger UI, and auto-derives the entire `ZLayer`
-dependency graph — all at **compile time**, with no runtime reflection.
+endpoints served by ZIO HTTP, with Swagger UI, and derives the entire `ZLayer` dependency graph.
+The endpoints and the layer are generated at **compile time**, without runtime reflection.
 
 The core is effect-agnostic (tagless final): ZIO is one backend, and any effect `F[_]` can be
 plugged in through the `OkapiEffect[F]` type class.
@@ -29,7 +29,8 @@ scalacOptions += "-Xmax-inlines:128"
 | `okapi-openapi` | OpenAPI JSON/YAML and Swagger UI, any effect |
 | `okapi-metrics` | endpoint metrics (per-request callback, Prometheus), any effect |
 | `okapi-client` | HTTP clients generated from annotated API traits, any effect |
-| `sbt-okapi` | sbt plugin generating a `<name>-client` module from the API's OpenAPI document |
+| `okapi-codegen` | tagless-final sttp client modules generated from an OpenAPI document |
+| `sbt-okapi` | sbt plugin generating a `<name>-client` module from the API's OpenAPI document, with `okapi-codegen` |
 
 Requires **Scala 3.6+**. Published for Scala 3 on Maven Central — no extra resolvers, no authentication.
 
@@ -85,7 +86,7 @@ object Main extends ZIOAppDefault {
 Run it and open `http://localhost:8080/docs` for the Swagger UI.
 
 Methods may return any `ZIO[R, ApiError | Throwable, A]` (`IO`, `UIO`, `Task`, `URIO[Repo, A]`, ...) or a
-plain `A`. Whatever `R` they need shows up in the routes' type, so a missing layer is a compile error.
+plain `A` — see [Return types](OKAPI.md#return-types-http-endpoints).
 
 JSON is pluggable: jsoniter-scala by default (as above), any Tapir JSON integration by import, and zio-json with
 okapi-zio — see [JSON](OKAPI.md#json).
@@ -116,14 +117,26 @@ val endpoints: List[ServerEndpoint[Any, IO]] = OkapiEndpoints[IO].of(BookControl
 - `@Consumes` / `@Produces` content types (JSON, form, multipart, any text or binary media type, SSE, …)
 - pluggable JSON (jsoniter-scala, zio-json, circe, … — any Tapir integration)
 - no 22-parameter limit, default parameter values, `using` clauses, annotated API traits
-- success status codes inferred per verb (`201` / `204` / `200`) or set explicitly with `@Status(code)`
+- success status codes inferred (`204` for a `Unit` result, `201` for `@Post`, else `200`) or set with `@Status(code)`
 - `ApiError` → HTTP status mapping; any other failure → a logged `500` without the exception message
 - per-call status, headers and `Content-Type` (`ApiResponse`), `FileResponse` downloads
 - `ZStream` bodies, server-sent events, WebSocket pipes with text, binary or JSON frames
 - Tapir server options on the generated routes (CORS, …), zio-http middleware, and metrics per route template
 - `Okapi.autoLayer[Controllers]` — compile-time `ZLayer` wiring of the whole dependency tree
 - Swagger UI + `Okapi.openApiYaml` / `Okapi.openApiJson`, with extra endpoints and document customisation
-- clients: `OkapiClient[F].of[Api]` from an API trait, or a generated `<name>-client` module (`sbt okapiGenerateClient`)
+- clients: `OkapiClient[F].of[Api]` from an API trait, or a generated tagless-final `<name>-client` module
+  (`sbt okapiGenerateClient`): a trait per controller, models with jsoniter-scala codecs, an sttp implementation, fs2
+  or ZIO streams and server-sent events
+
+## Repository layout
+
+| Directory | |
+|-----------|--|
+| `core/` | `okapi-core` |
+| `modules/` | `zio/`, `openapi/`, `metrics/` — `okapi-zio`, `okapi-openapi`, `okapi-metrics` |
+| `client/` | `derived/` (`okapi-client`), `codegen/` (`okapi-codegen`), `codegen-it/` (compiles and runs a generated client) |
+| `sbt/` | `sbt-okapi` |
+| `example/` | `server/` (an Okapi API) and `client/` (its generated client) — separate sbt builds |
 
 ## Documentation
 
