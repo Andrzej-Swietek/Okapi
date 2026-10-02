@@ -9,6 +9,9 @@ lazy val core = project.in(file("core"))
 /** OpenAPI documents and Swagger UI for any effect. */
 lazy val okapiOpenapi = project.in(file("openapi"))
 
+/** Clients for Okapi API traits, any effect. */
+lazy val okapiClient = project.in(file("client")).dependsOn(core)
+
 /** ZIO specialisation: ZIO HTTP, ZStream / WebSocket, ZLayer. */
 lazy val okapiZio = project.in(file("zio")).dependsOn(core, okapiOpenapi)
 
@@ -16,7 +19,7 @@ lazy val okapiZio = project.in(file("zio")).dependsOn(core, okapiOpenapi)
 lazy val okapiMetrics = project.in(file("metrics")).dependsOn(okapiZio % "test->compile")
 
 lazy val root = (project in file("."))
-  .aggregate(core, okapiOpenapi, okapiZio, okapiMetrics)
+  .aggregate(core, okapiOpenapi, okapiZio, okapiMetrics, okapiClient)
   .settings(
     publish / skip := true
   )

@@ -22,12 +22,20 @@ private[okapi] class EndpointsMacro(val q: Quotes) extends RestEndpoints {
     host: Expr[ControllerHost[C, F, G]]
   ): Expr[List[ServerEndpoint[R, G]]] = {
     val target = Target(TypeRepr.of[C], TypeRepr.of[F], TypeRepr.of[G], TypeRepr.of[R], host.asTerm)
-    val controller = target.controller.typeSymbol
-    val basePath = controller.annotationArg(OkapiAnnotation.Controller).getOrElse("")
-    val tag = controller
+    val endpoints = routes(target.controller).map { (generator, route) =>
+      generator.generate(target, route).asExprOf[ServerEndpoint[R, G]]
+    }
+    Expr.ofList(endpoints)
+  }
+
+  /** The routed methods of `controller` with their generators, most specific path first, then by path. */
+  final def routes(controller: TypeRepr): List[(EndpointGenerator, Route)] = {
+    val sym = controller.typeSymbol
+    val basePath = sym.annotationArg(OkapiAnnotation.Controller).getOrElse("")
+    val tag = sym
       .nonEmptyAnnotationArg(OkapiAnnotation.ApiTag)
-      .orElse(controller.nonEmptyAnnotationArg(OkapiAnnotation.Tag))
-      .getOrElse(controller.name)
+      .orElse(sym.nonEmptyAnnotationArg(OkapiAnnotation.Tag))
+      .getOrElse(sym.name)
 
     def route(method: Symbol, kind: OkapiAnnotation, annotation: Term): Route = {
       val path = RoutePath.join(basePath, stringArg(annotation).getOrElse(""))
@@ -47,20 +55,11 @@ private[okapi] class EndpointsMacro(val q: Quotes) extends RestEndpoints {
       )
     }
 
-    val routes = {
-      controller
-        .methodMembers
-        .flatMap(m => {
-          routing(m)
-            .map((generator, kind, ann) => generator -> route(m, kind, ann))
-        })
-    }
-    if routes.isEmpty then report.warning(s"Controller ${controller.fullName} has no routed methods")
+    val routed =
+      sym.methodMembers.flatMap(m => routing(m).map((generator, kind, ann) => generator -> route(m, kind, ann)))
+    if routed.isEmpty then report.warning(s"Controller ${sym.fullName} has no routed methods")
     // one order across generators: a capture of one kind must not shadow a more specific route of another
-    val endpoints = routes.sortBy((_, r) => (r.specificity, r.path.show)).map { (generator, r) =>
-      generator.generate(target, r).asExprOf[ServerEndpoint[R, G]]
-    }
-    Expr.ofList(endpoints)
+    routed.sortBy((_, r) => (r.specificity, r.path.show))
   }
 
   /** The routing annotation of `method` (nearest in its lineage) and the generator owning it. */

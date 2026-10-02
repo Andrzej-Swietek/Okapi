@@ -24,6 +24,9 @@ private[okapi] trait EndpointGeneration extends RequestInputs with OutputCodecs 
     docs: EndpointDocs,
   )
 
+  /** An endpoint term with the layout of its inputs and the method it describes. */
+  final case class Described(endpoint: Term, inputs: InputLayout, spec: MethodSpec)
+
   abstract class EndpointGenerator {
 
     /** Names of the method annotations this generator handles. */
@@ -31,13 +34,19 @@ private[okapi] trait EndpointGeneration extends RequestInputs with OutputCodecs 
 
     /** Returns the `ServerEndpoint[target.capabilities, target.server]` term. */
     final def generate(target: Target, route: Route): Term = {
-      val spec = parseMethod(target.controller, target.effect, route.method)
+      val described = describe(target.controller, target.effect, route)
+      attach(target, described.endpoint, serverLogic(target, described.spec, described.inputs))
+    }
+
+    /** The endpoint of `route` without server logic: inputs, outputs, error output and docs. */
+    final def describe(controller: TypeRepr, effect: TypeRepr, route: Route): Described = {
+      val spec = parseMethod(controller, effect, route.method)
       val body = requestBody(spec).map(bodyInput(_, spec.consumes))
       val inputs = layout(requestInputs(route.path, spec) ++ body)
       val endpoint = addOutputs(applyInputs(baseEndpoint(route), inputs), route, spec)
         .withErrorOutput(apiErrorOutput.asTerm)
         .withDocs(route.docs)
-      attach(target, endpoint, serverLogic(target, spec, inputs))
+      Described(endpoint, inputs, spec)
     }
 
     protected def baseEndpoint(route: Route): Term

@@ -55,6 +55,25 @@ object ApiError {
     given Codec[String, ApiErrorResponse, CodecFormat.Json] = sttp.tapir.json.jsoniter.jsoniterCodec
   }
 
+  /** The `ApiError` an error response stands for: the matching case for its status, [[Other]] for other 4xx / 5xx
+    * statuses, [[Internal]] for any other status.
+    */
+  def of(status: StatusCode, message: String): ApiError = {
+    status.code match {
+      case 400 => BadRequest(message)
+      case 401 => Unauthorized(message)
+      case 403 => Forbidden(message)
+      case 404 => NotFound(message)
+      case 409 => Conflict(message)
+      case 422 => UnprocessableEntity(message)
+      case 429 => TooManyRequests(message)
+      case 500 => Internal(message)
+      case 503 => ServiceUnavailable(message)
+      case _ if status.isClientError || status.isServerError => Other(status, message)
+      case _ => Internal(s"Unexpected status ${status.code}: $message")
+    }
+  }
+
   def toResponse(e: ApiError): ApiErrorResponse =
     ApiErrorResponse(e.status.code, e.message)
 }
