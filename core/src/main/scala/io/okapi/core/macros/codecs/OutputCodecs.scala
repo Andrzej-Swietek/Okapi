@@ -53,6 +53,8 @@ private[okapi] trait OutputCodecs extends CodecSupport {
 
   /** `(StatusCode, ApiErrorResponse)` — the error output shared by every endpoint. */
   def apiErrorOutput: Expr[EndpointOutput[(sttp.model.StatusCode, ApiErrorResponse)]] = {
-    '{ sttp.tapir.statusCode.and(OkapiRuntime.jsonBody(summon[Codec[String, ApiErrorResponse, CodecFormat.Json]])) }
+    '{
+      OkapiRuntime.apiErrorStatus.and(OkapiRuntime.jsonBody(summon[Codec[String, ApiErrorResponse, CodecFormat.Json]]))
+    }
   }
 }

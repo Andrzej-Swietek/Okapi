@@ -28,6 +28,8 @@ scalacOptions += "-Xmax-inlines:128"
 | `okapi-core` | effect-agnostic annotations, macros and runtime — no ZIO dependency |
 | `okapi-openapi` | OpenAPI JSON/YAML and Swagger UI, any effect |
 | `okapi-metrics` | endpoint metrics (per-request callback, Prometheus), any effect |
+| `okapi-client` | HTTP clients generated from annotated API traits, any effect |
+| `sbt-okapi` | sbt plugin generating a `<name>-client` module from the API's OpenAPI document |
 
 Requires **Scala 3.6+**. Published for Scala 3 on Maven Central — no extra resolvers, no authentication.
 
@@ -121,6 +123,7 @@ val endpoints: List[ServerEndpoint[Any, IO]] = OkapiEndpoints[IO].of(BookControl
 - Tapir server options on the generated routes (CORS, …), zio-http middleware, and metrics per route template
 - `Okapi.autoLayer[Controllers]` — compile-time `ZLayer` wiring of the whole dependency tree
 - Swagger UI + `Okapi.openApiYaml` / `Okapi.openApiJson`, with extra endpoints and document customisation
+- clients: `OkapiClient[F].of[Api]` from an API trait, or a generated `<name>-client` module (`sbt okapiGenerateClient`)
 
 ## Documentation
 

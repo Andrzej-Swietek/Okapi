@@ -13,6 +13,7 @@ object OkapiBuild {
     val tapir = "1.13.32"
     val zioLogging = "2.5.3"
     val jsoniter = "2.41.2"
+    val sttpShared = "1.5.2" // the sttp-shared version tapir depends on
   }
 
   lazy val compilerSettings: Seq[Setting[?]] = Seq(

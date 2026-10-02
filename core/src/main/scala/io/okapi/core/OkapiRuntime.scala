@@ -72,6 +72,21 @@ object OkapiRuntime {
   def grouped[V](input: EndpointInput[V]): EndpointInput[InputGroup] =
     input.map(InputGroup(_))(_.values.asInstanceOf[V])
 
+  /** The error status, documented with every status an [[ApiError]] case maps to. */
+  val apiErrorStatus: EndpointOutput.StatusCode[StatusCode] = {
+    List(
+      StatusCode.BadRequest -> "Bad request",
+      StatusCode.Unauthorized -> "Unauthorized",
+      StatusCode.Forbidden -> "Forbidden",
+      StatusCode.NotFound -> "Not found",
+      StatusCode.Conflict -> "Conflict",
+      StatusCode.UnprocessableEntity -> "Unprocessable entity",
+      StatusCode.TooManyRequests -> "Too many requests",
+      StatusCode.InternalServerError -> "Internal server error",
+      StatusCode.ServiceUnavailable -> "Service unavailable",
+    ).foldLeft(sttp.tapir.statusCode)((output, status) => output.description(status._1, status._2))
+  }
+
   /** A JSON body from any Tapir JSON codec. */
   def jsonBody[T](codec: Codec[String, T, CodecFormat.Json]): EndpointIO.Body[String, T] =
     sttp.tapir.customCodecJsonBody[T](using codec)

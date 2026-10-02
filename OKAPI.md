@@ -29,6 +29,8 @@ scalacOptions += "-Xmax-inlines:128"   // required for macro expansion depth
 | `okapi-core` | annotations, macros, runtime, `JsoniterCodec`, `ApiResponse` | no |
 | `okapi-openapi` | OpenAPI JSON/YAML documents and Swagger UI endpoints | no |
 | `okapi-metrics` | endpoint metrics: a per-request callback and Prometheus | no |
+| `okapi-client` | HTTP clients generated from annotated API traits | no |
+| `sbt-okapi` | sbt plugin: writes the OpenAPI document and generates a `<name>-client` module | — |
 | `okapi-zio` | ZIO HTTP routes, `ZStream` / SSE / WebSocket bodies, `ZLayer` wiring (brings `okapi-core` and `okapi-openapi`) | yes |
 
 Requires Scala 3.6+.
@@ -446,6 +448,66 @@ trait OkapiEffect[F[_]] {
 Under the hood a `ControllerHost[C, F, G]` decides how the generated server logic obtains controller `C`
 and runs its `F` effects in the server effect `G` — a fixed instance in the core, the ZIO environment
 (`G = RIO[C & R, *]`) in `okapi-zio`.
+
+---
+
+## Clients
+
+Two ways to call an Okapi API from Scala.
+
+### From the API trait (`okapi-client`)
+
+Describe the API once as an annotated trait; the server implements it, the client is made from it at compile time
+— same types, same routes, nothing generated on disk:
+
+```scala
+@Controller("/api/books")
+trait BookApi[F[_]] {
+  @Get("/{id}") def get(@Path("id") id: Int): F[Book]
+  @Post("") def create(@RequestBody book: Book): F[Book]
+}
+
+final class BookServer(using F: OkapiEffect[IO]) extends BookApi[IO] { ... }   // served with OkapiEndpoints / Okapi
+
+val books: BookApi[IO] = OkapiClient[IO].of[BookApi[IO]](uri"http://books:8080", backend)  // sttp client4 Backend[IO]
+books.get(1)                                                                              // IO[Book]
+```
+
+Every abstract method must be routed and return `F[A]`. An error response fails `F` with the `ApiError` for its status
+(`ApiErrorException` for `Throwable`-based effects); `ApiResponse` and `FileResponse` results work as on the server.
+Put the trait (and its models) in a small module both the server and its clients depend on.
+
+### Generated files (`sbt-okapi`)
+
+When a client must exist as source files — published as `<api>-client`, or reviewed — the sbt plugin generates
+them from the API's OpenAPI document:
+
+```scala
+// project/plugins.sbt
+addSbtPlugin("io.github.andrzej-swietek" % "sbt-okapi" % "0.2.0")
+
+// build.sbt
+lazy val api = project
+  .enablePlugins(OkapiPlugin)
+  .settings(okapiSpec := "com.example.ApiSpec.yaml")   // object ApiSpec { def yaml = Okapi.openApiYaml[Controllers]("API", "1") }
+
+lazy val apiClient = project.in(file("api-client"))    // the generated module
+```
+
+| Task / setting | |
+|----------------|--|
+| `okapiSpecFile` | writes the document to `target/okapi/openapi.yaml` (runs `okapiSpec` on the test classpath) |
+| `okapiGenerateClient` | writes Tapir endpoints, models with jsoniter-scala codecs, and a `build.sbt` (if absent) to `okapiClientDirectory` |
+| `okapiClientName` | `<name>-client` |
+| `okapiClientPackage` / `okapiClientObject` | `<name>.client` / `<Name>Endpoints` |
+| `okapiClientDirectory` | `<base>/<okapiClientName>` |
+| `okapiClientStreaming` | streams for binary bodies: `fs2` (default) or `zio` |
+
+Call a generated endpoint with Tapir's sttp client interpreter:
+`SttpClientInterpreter().toClientThrowDecodeFailures(ApiEndpoints.getApiBooksId, Some(uri), backend)(id)`; error
+responses come back as `Left(ApiErrorResponse(...))`. The same `openapi.yaml` feeds other generators for clients in
+other languages. Run `okapiGenerateClient` and the client module's compilation in separate sbt sessions, since sbt
+reads the generated `build.sbt` on start.
 
 ---
 
