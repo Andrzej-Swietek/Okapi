@@ -93,15 +93,14 @@ verbs. Override it explicitly:
 
 ## Supported media types
 
-A declared `@Consumes` / `@Produces` is validated at compile time and used **exactly** as the body's `Content-Type`,
-except on a JSON body of a case class, which is sent as `application/json`. Without one, each body kind has its
-default.
+A declared `@Consumes` / `@Produces` is validated at compile time and used **exactly** as the body's `Content-Type`.
+Without one, each body kind has its default.
 
 ### Request body (`@Consumes`)
 
 | Body type | Media type | Body |
 |-----------|-----------|------|
-| case class | none or `application/json` (or `*+json`) | JSON — see [JSON](#json) |
+| case class | none → `application/json`; otherwise `application/json` or `application/*+json`, in any case and with any parameters | JSON — see [JSON](#json) |
 | case class | `application/x-www-form-urlencoded` | form (`Codec[String, T, XWwwFormUrlencoded]`) |
 | case class | `multipart/form-data` | multipart (`MultipartCodec[T]`) |
 | `String` | none → `text/plain`; otherwise the declared one (`text/html`, `application/xml`, `application/json`, ...) | raw string |
@@ -114,7 +113,7 @@ Any other combination (e.g. a case class with `@Consumes("text/csv")`) is a comp
 
 | Result type | Media type | Body |
 |-------------|-----------|------|
-| case class | none or `application/json` (or `*+json`) | JSON — see [JSON](#json) |
+| case class | none → `application/json`; otherwise `application/json` or `application/*+json`, in any case and with any parameters | JSON — see [JSON](#json) |
 | case class | `application/x-www-form-urlencoded` | form |
 | `String` | none → `text/plain`; otherwise the declared one (`text/html`, `text/event-stream`, `application/json`, ...) | raw string |
 | `Array[Byte]` | none → `application/octet-stream`; otherwise the declared one (`image/png`, `application/pdf`, ...) | raw bytes |
@@ -140,6 +139,7 @@ The JSON codec of a body type `T` is the first found of:
 
    final case class Book(id: Int, title: String) derives JsoniterCodec
    ```
+   A field equal to its default value is written like any other.
    **Sealed hierarchies and enums** work the same way and carry their case name in a `"type"` field
    (`JsoniterCodec.Discriminator`), in the JSON *and* in the OpenAPI schema:
    ```scala
@@ -149,8 +149,9 @@ The JSON codec of a body type `T` is the first found of:
    enum Color derives JsoniterCodec { case Red, Green }  // {"type": "Red"}
    ```
    Or, with a custom configuration, `given JsonValueCodec[Book] = JsonCodecMaker.make(config)` (then provide a
-   matching `Schema` if the format differs from the default). Containers of such
-   types (`List[Book]`, `Option[Book]`, `Map[String, Book]`, ...) need no codec of their own: Okapi makes one;
+   matching `Schema` if the format differs from the default). Primitives (`Int`, `String`, `UUID`, ...) and
+   containers of such types or primitives (`List[Book]`, `Option[Long]`, `Map[String, Int]`, ...) need no codec of
+   their own: Okapi makes one;
 3. with **okapi-zio**, a zio-json `JsonCodec[T]` (`derives JsonCodec`).
 
 The OpenAPI schema comes with the codec: a `JsoniterCodec` carries its own; for a plain `JsonValueCodec` or a
@@ -221,16 +222,20 @@ final class WsController(service: SomeService) {
 Controller methods can return:
 - A pure value `T` — wrapped in `ZIO.succeed` automatically
 - Any `ZIO[R, E, T]` with `E <: ApiError | Throwable`: `IO[ApiError, T]`, `IO[ApiError.NotFound, T]`, `UIO[T]`, `Task[T]`, `RIO[R, T]`, `URIO[R, T]`, `ZIO[R, ApiError | Throwable, T]`
-- `FileResponse` — binary download; sets `Content-Disposition` from the filename (quotes/CR/LF stripped)
+- `FileResponse` — binary download; sets `Content-Disposition` from the filename (`"`, `\` and characters outside
+  printable ASCII replaced by `_`, a non-ASCII name also sent as `filename*=UTF-8''...`)
 - `ZStream[Any, Throwable, Byte]` — chunked streaming, with the `@Produces` media type (`application/octet-stream` by default)
 - `ZStream[Any, Throwable, ServerSentEvent]` (`sttp.model.sse.ServerSentEvent`) — a `text/event-stream` of server-sent events
 - `ApiResponse[A]` — `A` with a status and headers chosen per call, see [Per-call responses](#per-call-responses)
+
+A stream body or WebSocket pipe of another environment or error type (e.g. `ZStream[Repo, Throwable, Byte]`,
+`ZStream[Any, ApiError, Byte]`) is a compile error.
 
 Failures are mapped as follows:
 
 | Failure | Response |
 |---------|----------|
-| an `ApiError` (see below) | its status, body `{"code": ..., "message": ...}` |
+| an `ApiError` (see below) | its status, body `{"code": ..., "message": ...}`; a defect in the same cause (e.g. from a finalizer) is logged |
 | `ApiErrorException(apiError)` — failed with, or died with (e.g. via `.orDie`) | the wrapped `ApiError` |
 | any other `Throwable`, or a defect (`ZIO.die`) | `500 Internal server error`; the cause is logged with `ZIO.logErrorCause`, its message is **not** sent |
 | interruption | propagated |
@@ -240,13 +245,14 @@ Failures are mapped as follows:
 `.provide`. Requiring the controller itself (or a supertype of it) adds nothing.
 
 **Scope.** A method needing a `Scope` gets a fresh scope per request, closed when the method's effect
-completes; `Scope` never appears in the routes' type. Do not use a scoped resource from a `ZStream` or
+completes; a defect in one of its finalizers is mapped like any other defect. `Scope` never appears in the routes' type. Do not use a scoped resource from a `ZStream` or
 WebSocket pipe returned by such a method — it is already released when the stream runs.
 
 ### Per-call responses
 
 `ApiResponse[A]` (in `io.okapi.core.http`, effect-agnostic) carries a body together with a status and headers decided
-at run time. `A` is documented as the body; without `withStatus` the endpoint's success status is sent.
+at run time. `A` is documented as the body and the endpoint's success status as the status; without `withStatus`
+that status is sent.
 
 ```scala
 @Get("/{id}/image")
@@ -301,7 +307,7 @@ Okapi.endpoints[MyController]                       // List[ZServerEndpoint[MyCo
 // Auto-wire all dependencies into a single ZLayer
 Okapi.autoLayer[Controllers]                        // ZLayer[In, E, C1 & C2 & ...], see autoLayer below
 
-// Manual layer registration (older API)
+// Manual layer registration (older API): ZIO[R, E | LayerError, A], LayerError being the layers' error type
 Okapi.registerOkapiControllers[Controllers](effect)
 ```
 
@@ -309,7 +315,8 @@ Okapi.registerOkapiControllers[Controllers](effect)
 controllers' methods need from the ZIO environment (see [Return types](#return-types-http-endpoints)).
 
 Each endpoint is named after its controller method, and the name is its OpenAPI operation id (`getBook`). A name
-several endpoints share is prefixed with the endpoint's tag in the document (`stats` in `Books` → `booksStats`). An
+several endpoints share is prefixed with the endpoint's tag in the document (`stats` in `Books` → `booksStats`), and an
+id still shared after that gets `2`, `3`, ... appended in document order. An
 operation with a streamed request or response body (`ZStream`, SSE) carries Tapir codegen's
 `x-tapir-codegen-directives: [force-req-body-streaming]` / `[force-resp-body-streaming]`, marking the body as a stream
 for client generators.
@@ -349,7 +356,8 @@ class name), `status` the status class (`2xx`, ...). Pass `namespace` / `registr
 `PrometheusRegistry`.
 
 For another metrics system, `OkapiMetrics.interceptor[F](record)` calls `record` once per request matching an
-endpoint, with a `RequestRecord(method, path, controller, status, duration)` — `path` again the route template:
+endpoint, with a `RequestRecord(method, path, controller, status, duration)` — `path` again the route template. A
+failure of `record` is ignored and leaves the response unchanged:
 
 ```scala
 val options = ZioHttpServerOptions
@@ -374,9 +382,12 @@ zio-http middleware (`HandlerAspect`) applies to the generated routes as to any 
    discovered type
 
 The result is a `ZLayer[In, E, C1 & C2 & ...]`:
-- `In` — dependencies that cannot be derived: traits, abstract classes and library types (`scala.*`, `java.*`,
-  `javax.*`, `zio.*`, `sttp.*`, e.g. `String`, `DataSource`, `zio.http.Client`). `Any` when there are none. Supply
-  them next to it: `.provide(Okapi.autoLayer[Controllers], Clock.live)`.
+- `In` — dependencies that cannot be derived: traits, abstract classes and types in the packages `scala.*`, `java.*`,
+  `javax.*`, `zio.*`, `sttp.*` (e.g. `String`, `DataSource`, `zio.http.Client`). Every other concrete class, other
+  libraries' classes included, is derived from its primary constructor. A dependency with a `ZLayer.Derive.Default`
+  (a `zio.Config`-backed type, `Hub`, `Queue`, ...) is built from that default, and only the default's own
+  environment joins `In`. `Any` when there are none. Supply them next to it:
+  `.provide(Okapi.autoLayer[Controllers], Clock.live)`.
 - `E` — what derivation can fail with: `Nothing` for plain constructors, e.g. `Config.Error` when a dependency
   is read from a `zio.Config` (a `ZLayer.Derive.Default`) or has a `ZLayer.Derive.Scoped` lifecycle.
 
@@ -474,7 +485,8 @@ books.get(1)                                                                    
 Every routed method must return `F[A]`; calling an abstract method without a routing annotation throws
 `UnsupportedOperationException`. An error response fails `F` with `OkapiEffect.fail` of the `ApiError` for its status
 (an `ApiErrorException` with `OkapiEffect.fromMonadError`); `ApiResponse` and `FileResponse` results work as on the
-server.
+server. Overloaded methods and backticked names are routed like any other. With a backend whose effect throws, a checked
+exception such as `SttpClientException` reaches the caller as the cause of an `UndeclaredThrowableException`.
 Put the trait (and its models) in a small module both the server and its clients depend on.
 
 ### Generated files (`sbt-okapi`)
@@ -524,9 +536,13 @@ follow `okapiClientStreaming`:
 A response stream holds its connection until it is consumed. The generated `build.sbt` brings sttp's `fs2` or `zio`
 module; one written before the mode changed keeps its dependencies. A trait per
 controller (the operations' first tag) holds its operations, named by their operation ids, without a leading tag
-prefix (`booksStats` → `stats`). Optional parameters default to `None` (lists to `Nil`) and come last; JSON field
-names that are not identifiers are mapped with `@named`. A string enum becomes an `enum` carrying its wire value, and a
-`oneOf` with a discriminator a sealed trait with its cases in one file.
+prefix (`booksStats` → `stats`). Optional parameters default to `None` (lists to `Nil`) and come last; a list header
+is sent as one comma-separated value, and a path parameter may sit inside a segment (`/files/{name}.json`). JSON field
+names that are not identifiers, or that collide once converted (`user_id` and `userId`), are mapped with `@named`; a
+required empty list is written as `[]`. A string enum becomes an `enum` carrying its wire value, an `allOf` of objects
+one case class with their properties, and a `oneOf` with a discriminator a sealed trait over its object cases, in one
+file (a case without fields is a `case object` unless it is also used as a type on its own); a schema without a Scala
+shape, such as a `oneOf` without a discriminator, is read as `RawJson`.
 
 The generator (`okapi-codegen`) runs on the project's Test classpath, where `okapiSpec` is evaluated; the plugin then
 formats the sources with scalafmt.
