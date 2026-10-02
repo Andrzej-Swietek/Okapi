@@ -97,8 +97,9 @@ object Identifier {
 
   /** The first of `name`, `name + suffix` (when `suffix` is not empty), `name2`, `name3`, … not in `taken`. */
   def unique(name: Identifier, taken: Set[Identifier], suffix: String = ""): Identifier = {
-    val candidates = Iterator(name) ++ Iterator(name + suffix).filter(_ => suffix.nonEmpty) ++
-      Iterator.from(2).map(i => s"$name$i")
+    def suffixed(text: String) = escape(name.bare + text)
+    val candidates = Iterator(name) ++ Iterator(suffixed(suffix)).filter(_ => suffix.nonEmpty) ++
+      Iterator.from(2).map(i => suffixed(i.toString))
     candidates.find(c => !taken.contains(c)).get
   }
 
@@ -139,4 +140,112 @@ object Literal {
     }
     "\"" + escaped + "\""
   }
+}
+
+/** Names the generated sources use, which a name from the document must not take. */
+private[codegen] object Reserved {
+
+  /** Types the generated files refer to by simple name: a model of this name gets a `Model` suffix. */
+  val types: Set[String] = Set(
+    "Any",
+    "Array",
+    "Boolean",
+    "Byte",
+    "Double",
+    "Either",
+    "Float",
+    "Int",
+    "Left",
+    "List",
+    "Long",
+    "Map",
+    "Nil",
+    "None",
+    "Option",
+    "Right",
+    "Seq",
+    "Set",
+    "Short",
+    "Some",
+    "String",
+    "Unit",
+    "Nothing",
+    "Throwable",
+    "Try",
+    "Backend",
+    "StreamBackend",
+    "GenericRequest",
+    "PartialRequest",
+    "Request",
+    "ResponseAs",
+    "StreamResponseAs",
+    "ResponseMetadata",
+    "Effect",
+    "Uri",
+    "UriContext",
+    "Header",
+    "MediaType",
+    "ServerSentEvent",
+    "Fs2Streams",
+    "ZioStreams",
+    "Fs2ServerSentEvents",
+    "ZioServerSentEvents",
+    "Stream",
+    "ZStream",
+    "Task",
+    "JsonValueCodec",
+    "JsonCodecMaker",
+    "CodecMakerConfig",
+    "JsonReader",
+    "JsonWriter",
+    "RawJson",
+    "ApiException",
+    "SttpTransport",
+  )
+
+  /** Terms an implementation method's body refers to: a parameter of this name gets a counter. */
+  val parameters: Set[String] = Set(
+    "request",
+    "baseUri",
+    "transport",
+    "streams",
+    "asBody",
+    "asStream",
+    "asEvents",
+    "multipart",
+    "writeToArray",
+    "writeToString",
+    "headers",
+    "backend",
+  )
+
+  /** Members every trait or class has: an operation or accessor of this name gets a counter. */
+  val members: Set[String] = Set(
+    "transport",
+    "toString",
+    "hashCode",
+    "equals",
+    "getClass",
+    "wait",
+    "notify",
+    "notifyAll",
+    "clone",
+    "finalize",
+  )
+
+  /** Members of every case class: a field of this name gets a `Value` suffix. */
+  val fields: Set[String] = Set(
+    "copy",
+    "hashCode",
+    "equals",
+    "toString",
+    "canEqual",
+    "productArity",
+    "productElement",
+    "productPrefix",
+    "productIterator",
+    "productElementName",
+    "productElementNames",
+    "getClass",
+  )
 }

@@ -1,5 +1,7 @@
 package io.okapi.codegen
 
+import scala.collection.mutable
+
 /** The client an OpenAPI document describes, in the terms the renderers emit: operations grouped by controller, and the
   * models they exchange.
   */
@@ -7,6 +9,45 @@ final case class ClientModel(groups: List[Group], models: List[Model]) {
   val modelNames: Set[String] = models.map(_.name.value).toSet
 
   def model(name: String): Option[Model] = models.find(_.name.value == name)
+
+  /** Whether `name` is a case of a sealed trait, which has no codec of its own and is derived in each codec using it.
+    */
+  def isCase(name: String): Boolean = model(name).exists {
+    case r: Model.Record => r.parents.nonEmpty
+    case _ => false
+  }
+
+  /** Whether an operation or a field has the type `name` itself. */
+  def isReferenced(name: String): Boolean =
+    (operations.flatMap(_.types) ++ models.flatMap(_.types)).exists(_.mentions(name))
+
+  /** Whether the codec of `m` derives a type that reaches itself. */
+  def isRecursive(m: Model): Boolean = derivesRecursion(Set(m.name.value))
+
+  /** Whether a codec derived for `tpe` derives a type that reaches itself. */
+  def isRecursive(tpe: TypeRef): Boolean = derivesRecursion(tpe.names.filter(isCase))
+
+  private lazy val references: Map[String, Set[String]] = models.map {
+    case r: Model.Record => r.name.value -> r.fields.flatMap(_.tpe.names).filter(modelNames).toSet
+    case s: Model.Sealed => s.name.value -> s.cases.map(_.value).toSet
+    case e: Model.StringEnum => e.name.value -> Set.empty[String]
+  }.toMap
+
+  private def reachesItself(start: String): Boolean = {
+    val seen = mutable.Set.empty[String]
+    def visit(name: String): Boolean =
+      references.getOrElse(name, Set.empty).exists(next => next == start || (seen.add(next) && visit(next)))
+    visit(start)
+  }
+
+  /** Whether `roots`, or a case they derive, reaches itself. */
+  private def derivesRecursion(roots: Set[String]): Boolean = {
+    val derived = mutable.Set.empty[String]
+    def visit(name: String): Unit =
+      if (derived.add(name)) references.getOrElse(name, Set.empty).filter(isCase).foreach(visit)
+    roots.foreach(visit)
+    derived.exists(reachesItself)
+  }
 
   def usesRawJson: Boolean =
     (groups.flatMap(_.operations.flatMap(_.types)) ++ models.flatMap(_.types)).exists(_.mentions(TypeRef.RawJson))
@@ -45,7 +86,10 @@ enum HttpMethod {
   def sttp: String = toString.toLowerCase
 }
 
-enum PathSegment {
+/** A `/`-separated segment of a path: literal text and captured parameters, in order. */
+final case class PathSegment(parts: List[PathPart])
+
+enum PathPart {
   case Literal(text: String)
   case Capture(param: Identifier)
 }
@@ -96,11 +140,14 @@ enum ResultBody {
 
 enum Model {
 
-  /** A case class, or a case object when it has no fields and extends a [[Model.Sealed]] parent. */
-  case Record(name: Identifier, fields: List[Field], parents: List[Identifier], recursive: Boolean)
+  /** A case class, or a case object when it has no fields, extends a [[Model.Sealed]] parent and is not a type of its
+    * own anywhere ([[ClientModel.isReferenced]]); `discriminator` is its value in the parent's discriminator field when
+    * that is not its name.
+    */
+  case Record(name: Identifier, fields: List[Field], parents: List[Identifier], discriminator: Option[WireName] = None)
 
   /** A sealed trait whose cases carry their name in the `discriminator` field. */
-  case Sealed(name: Identifier, discriminator: WireName, cases: List[Identifier], recursive: Boolean)
+  case Sealed(name: Identifier, discriminator: WireName, cases: List[Identifier])
 
   /** An enum of string values. */
   case StringEnum(name: Identifier, values: List[EnumValue])

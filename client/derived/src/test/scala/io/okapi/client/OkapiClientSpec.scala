@@ -6,6 +6,7 @@ import io.okapi.core.{ OkapiEffect, OkapiEndpoints }
 import io.okapi.core.annotations.{ Controller, Delete, Get, Header, Path, Post, Query, RequestBody }
 import io.okapi.core.http.{ ApiError, ApiErrorException, ApiResponse, FileResponse }
 import io.okapi.core.json.JsoniterCodec
+import scala.collection.mutable
 import scala.util.{ Failure, Success, Try }
 import sttp.client4.testing.BackendStub
 import sttp.model.{ StatusCode, Uri }
@@ -66,6 +67,13 @@ object OkapiClientSpec extends ZIOSpecDefault {
       @Query("a24") a24: Int,
       @Query("a25") a25: Int,
     ): F[String]
+  }
+
+  @Controller("/api/find")
+  trait OverloadedApi[F[_]] {
+    @Get("/id/{id}") def find(@Path("id") id: Int): F[Unit]
+    @Get("/title/{title}") def find(@Path("title") title: String): F[Unit]
+    @Get("/all") def `find-all`(): F[Unit]
   }
 
   final class BookServer(using F: OkapiEffect[Try]) extends BookApi[Try] {
@@ -143,6 +151,15 @@ object OkapiClientSpec extends ZIOSpecDefault {
       .backend()
   }
 
+  private val sent = mutable.Buffer.empty[String]
+
+  private val recording = BackendStub[Try](TryMonad)
+    .whenRequestMatches { request =>
+      val _ = sent += request.uri.toString
+      true
+    }
+    .thenRespondAdjust("", StatusCode.NoContent)
+
   private val client: BookApi[Try] = OkapiClient[Try].of[BookApi[Try]](Uri.unsafeParse("http://books.local"), backend)
 
   override def spec = {
@@ -179,6 +196,19 @@ object OkapiClientSpec extends ZIOSpecDefault {
         val result =
           client.wide(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25)
         assertTrue(result == Success((1 to 25).mkString(",")))
+      },
+      test("overloads of one arity and a backticked name each send their own request") {
+        val overloaded = OkapiClient[Try].of[OverloadedApi[Try]](Uri.unsafeParse("http://books.local"), recording)
+        sent.clear()
+        val results = List(overloaded.find(1), overloaded.find("dune"), overloaded.`find-all`())
+        assertTrue(
+          results.forall(_.isSuccess),
+          sent.toList == List(
+            "http://books.local/api/find/id/1",
+            "http://books.local/api/find/title/dune",
+            "http://books.local/api/find/all",
+          ),
+        )
       },
       test("the client is a plain instance of the trait") {
         assertTrue(client.toString.contains("BookApi"), client == client)

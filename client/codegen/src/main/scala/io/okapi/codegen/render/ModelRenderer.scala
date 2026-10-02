@@ -2,7 +2,7 @@ package io.okapi.codegen.render
 
 import scala.collection.mutable
 import io.okapi.codegen.*
-import Source.{ file, importsOf, Jsoniter }
+import Source.{ codecMaker, file, importsOf, Jsoniter }
 
 /** Renders the models with their jsoniter-scala codecs, in the companions.
   *
@@ -48,11 +48,10 @@ private[codegen] object ModelRenderer {
     val models = units.flatMap(_.models)
     val withRawJson = units.exists(_.rawJson)
     val imports = importsOf(models.flatMap(_.types), model, packages) ++
-      (if (models.exists(needsMaker)) List(Codec, Maker) else Nil) ++
-      (if (models.exists(needsConfig)) List(Config) else Nil) ++
+      (if (models.exists(needsMaker)) List(Codec, Maker, Config) else Nil) ++
       (if (models.exists(renamesFields)) List(Named) else Nil) ++
       (if (models.exists(_.isInstanceOf[Model.StringEnum]) || withRawJson) List(Codec, Reader, Writer) else Nil)
-    file(packages.models, imports, models.map(definition) ++ (if (withRawJson) List(RawJson) else Nil))
+    file(packages.models, imports, models.map(definition(_, model)) ++ (if (withRawJson) List(RawJson) else Nil))
   }
 
   private def needsMaker(m: Model): Boolean = m match {
@@ -61,43 +60,35 @@ private[codegen] object ModelRenderer {
     case _: Model.StringEnum => false
   }
 
-  private def needsConfig(m: Model): Boolean = m match {
-    case r: Model.Record => r.parents.isEmpty && r.recursive
-    case _: Model.Sealed => true
-    case _: Model.StringEnum => false
-  }
-
   private def renamesFields(m: Model): Boolean = m match {
-    case r: Model.Record => r.fields.exists(f => f.name.bare != f.wire.value)
+    case r: Model.Record => r.discriminator.isDefined || r.fields.exists(f => f.name.bare != f.wire.value)
     case _ => false
   }
 
-  private def definition(m: Model): String = m match {
-    case r: Model.Record => record(r)
+  private def definition(m: Model, model: ClientModel): String = m match {
+    case r: Model.Record => record(r, model)
     case s: Model.Sealed =>
-      val config = s"CodecMakerConfig.withDiscriminatorFieldName(Some(${s.discriminator.literal}))" +
-        (if (s.recursive) ".withAllowRecursiveTypes(true)" else "")
       val name = s.name.value
-      s"sealed trait $name\n\nobject $name {\n  given JsonValueCodec[$name] = JsonCodecMaker.make($config)\n}"
+      val make = codecMaker(model.isRecursive(s), Some(s.discriminator))
+      s"sealed trait $name\n\nobject $name {\n  given JsonValueCodec[$name] = $make\n}"
     case e: Model.StringEnum => stringEnum(e)
   }
 
-  private def record(r: Model.Record): String = {
+  private def record(r: Model.Record, model: ClientModel): String = {
     val name = r.name.value
     val parents = if (r.parents.isEmpty) "" else r.parents.map(_.value).mkString(" extends ", " with ", "")
-    if (r.fields.isEmpty && r.parents.nonEmpty) s"case object $name$parents"
+    val discriminator = r.discriminator.fold("")(value => s"@named(${value.literal})\n")
+    if (r.fields.isEmpty && r.parents.nonEmpty && !model.isReferenced(name))
+      s"${discriminator}case object $name$parents"
     else {
       val fields = r.fields.map { f =>
         val renamed = if (f.name.bare != f.wire.value) s"@named(${f.wire.literal}) " else ""
         s"$renamed${f.name.value}: ${f.tpe.render}${f.default.fold("")(" = " + _)}"
       }
-      val declaration = s"final case class $name(${fields.mkString(", ")})$parents"
+      val declaration = s"${discriminator}final case class $name(${fields.mkString(", ")})$parents"
       if (r.parents.nonEmpty) declaration
       else {
-        val make =
-          if (r.recursive) "JsonCodecMaker.make(CodecMakerConfig.withAllowRecursiveTypes(true))"
-          else "JsonCodecMaker.make"
-        s"$declaration\n\nobject $name {\n  given JsonValueCodec[$name] = $make\n}"
+        s"$declaration\n\nobject $name {\n  given JsonValueCodec[$name] = ${codecMaker(model.isRecursive(r))}\n}"
       }
     }
   }
@@ -116,7 +107,7 @@ private[codegen] object ModelRenderer {
        |    def nullValue: $name = null.asInstanceOf[$name]
        |
        |    def decodeValue(in: JsonReader, default: $name): $name = {
-       |      val value = in.readString(null)
+       |      val value = in.readString("")
        |      values.find(_.value == value).getOrElse(in.decodeError(s"unknown $name: $$value"))
        |    }
        |
@@ -137,7 +128,7 @@ private[codegen] object ModelRenderer {
       |      RawJson(new String(in.readRawValAsBytes(), java.nio.charset.StandardCharsets.UTF_8))
       |
       |    def encodeValue(x: RawJson, out: JsonWriter): Unit =
-      |      out.writeRawVal(x.json.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+      |      out.writeRawVal(x.json.getBytes(java.nio.charset.StandardCharsets.UTF_8).nn)
       |  }
       |}""".stripMargin
   }

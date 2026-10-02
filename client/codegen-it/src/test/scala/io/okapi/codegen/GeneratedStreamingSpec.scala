@@ -8,6 +8,8 @@ import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets.UTF_8
 
 import scala.collection.mutable
+// the specs drive JDK and sttp APIs typed with nulls
+import scala.language.unsafeNulls
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import com.sun.net.httpserver.{ HttpExchange, HttpServer }
@@ -34,7 +36,7 @@ object GeneratedStreamingSpec extends ZIOSpecDefault {
         (e.getRequestMethod, e.getRequestURI.getPath) match {
           case ("GET", "/api/books/7/content") => reply(e, 200, "application/octet-stream", "chunk-1chunk-2")
           case ("PUT", "/api/books/7/content") =>
-            uploads.synchronized(uploads += new String(e.getRequestBody.readAllBytes(), UTF_8))
+            uploads.synchronized { uploads += new String(e.getRequestBody.readAllBytes(), UTF_8); () }
             reply(e, 204, "text/plain", "")
           case ("GET", "/api/books/events") =>
             reply(e, 200, "text/event-stream", "data: first\n\nevent: update\ndata: second\n\n")
@@ -69,7 +71,7 @@ object GeneratedStreamingSpec extends ZIOSpecDefault {
       },
       test("zio: streams a download and an upload, and reads server-sent events") {
         for {
-          backend <- HttpClientZioBackend()
+          backend <- HttpClientZioBackend.scoped()
           api = books.zioclient.impl.SttpLibrary(backend, base)
           download <- api.books.downloadContent(7).flatMap(_.runCollect)
           _ <- api.books.uploadContent(7, ZStream.fromIterable("up-zio".getBytes(UTF_8)))
@@ -83,13 +85,16 @@ object GeneratedStreamingSpec extends ZIOSpecDefault {
         )
       },
       test("none: a streamed body is a byte array, the events are read whole") {
-        val api = books.client.impl.SttpLibrary(sttp.client4.DefaultSyncBackend(), base)
-        val events = api.books.bookEvents()
+        val backend = sttp.client4.DefaultSyncBackend()
+        val api = books.client.impl.SttpLibrary(backend, base)
+        val (download, events) =
+          try (api.books.downloadContent(7), api.books.bookEvents())
+          finally backend.close()
         assertTrue(
-          new String(api.books.downloadContent(7), UTF_8) == "chunk-1chunk-2",
+          new String(download, UTF_8) == "chunk-1chunk-2",
           events.map(_.data) == List(Some("first"), Some("second")),
         )
       },
-    ) @@ TestAspect.sequential @@ TestAspect.withLiveClock
+    ) @@ TestAspect.sequential @@ TestAspect.withLiveClock @@ TestAspect.afterAll(ZIO.succeed(server.stop(0)))
   }
 }

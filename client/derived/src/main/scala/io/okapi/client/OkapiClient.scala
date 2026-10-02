@@ -15,7 +15,9 @@ import sttp.model.Uri
   * }}}
   * A routed method must return `F[A]` (a compile error otherwise); calling an abstract method that is not routed throws
   * `UnsupportedOperationException`. The requests are built from the same annotations as the server's endpoints; an
-  * error response fails `F` with the [[io.okapi.core.http.ApiError]] for its status.
+  * error response fails `F` with the [[io.okapi.core.http.ApiError]] for its status. A checked exception thrown by the
+  * call itself (e.g. `sttp.client4.SttpClientException` from a backend whose effect throws) reaches the caller as the
+  * cause of a `java.lang.reflect.UndeclaredThrowableException`.
   */
 object OkapiClient {
 

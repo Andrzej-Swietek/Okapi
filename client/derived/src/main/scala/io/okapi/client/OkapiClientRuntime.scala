@@ -39,16 +39,28 @@ object OkapiClientRuntime {
     FileResponse(data, """filename="([^"]*)"""".r.findFirstMatchIn(disposition).map(_.group(1).nn).getOrElse(""))
   }
 
-  /** An instance of the API trait `api` dispatching each routed method to its call, keyed `name/arity`. Methods with an
-    * implementation (e.g. default-argument getters) run it, `hashCode` and `equals` are by identity, and any other
-    * method throws `UnsupportedOperationException`.
+  /** A routed method by its JVM name and parameter classes, and its call. */
+  final case class Route(name: String, parameterTypes: List[Class[?]], call: Call)
+
+  private type Signature = (String, List[Class[?] | Null])
+
+  /** An instance of the API trait `api` dispatching each routed method to its call: by name and parameter classes, else
+    * by name and parameter count when one route has them. Methods with an implementation (e.g. default-argument
+    * getters) run it, `hashCode` and `equals` are by identity, and any other method throws
+    * `UnsupportedOperationException`.
     */
-  def proxy[A](api: Class[A], calls: Map[String, Call]): A = {
+  def proxy[A](api: Class[A], routes: List[Route]): A = {
+    val bySignature: Map[Signature, Call] = routes.map(r => ((r.name, r.parameterTypes): Signature) -> r.call).toMap
+    val byArity: Map[(String, Int), Call] =
+      routes.groupBy(r => (r.name, r.parameterTypes.size)).collect { case (key, List(only)) => key -> only.call }
     val handler = new InvocationHandler {
       def invoke(self: Object, method: Method, args: Array[Object | Null] | Null): Object | Null = {
         val arguments: Array[AnyRef | Null] =
           if args == null then Array.empty else args.asInstanceOf[Array[AnyRef | Null]]
-        calls.get(s"${method.getName}/${arguments.length}") match {
+        val name = method.getName.nn
+        val routed =
+          bySignature.get((name, method.getParameterTypes.nn.toList)).orElse(byArity.get((name, arguments.length)))
+        routed match {
           case Some(call) => call(arguments).asInstanceOf[Object]
           case None if method.getName == "toString" && arguments.isEmpty => s"OkapiClient[${api.getName}]"
           case None if method.getName == "hashCode" && arguments.isEmpty => Int.box(System.identityHashCode(self))

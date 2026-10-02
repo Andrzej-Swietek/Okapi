@@ -2,6 +2,8 @@ package io.okapi.codegen
 
 import zio.test.*
 
+// the specs drive JDK and sttp APIs typed with nulls
+import scala.language.unsafeNulls
 import books.client.*
 import books.client.impl.SttpLibrary
 import books.client.models.*
@@ -71,6 +73,14 @@ object GeneratedClientSpec extends ZIOSpecDefault {
         val (empty, _) = client("", StatusCode.NoContent)
         val (binary, _) = client("png")
         assertTrue(empty.books.deleteBook(1) == (), binary.cover.cover(1).toList == "png".getBytes.toList)
+      },
+      test("with every operation on the root trait, the client sends the same requests") {
+        val backend = SyncBackendStub
+          .whenRequestMatches(r => r.method == Method.DELETE && r.uri.toString == "http://api/base/api/books/3")
+          .thenRespondAdjust("", StatusCode.NoContent)
+        val api: _root_.books.single.Library[sttp.shared.Identity] =
+          _root_.books.single.impl.SttpLibrary(backend, uri"http://api/base")
+        assertTrue(api.booksDeleteBook(3) == ())
       },
       test("a non-2xx response fails with ApiException, its ApiErrorResponse decoded") {
         val (api, _) = client("""{"code":404,"message":"Book 9 not found"}""", StatusCode.NotFound)

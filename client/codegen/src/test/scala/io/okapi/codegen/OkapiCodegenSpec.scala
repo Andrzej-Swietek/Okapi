@@ -300,7 +300,8 @@ object OkapiCodegenSpec extends ZIOSpecDefault {
           book.contains("@named(\"page_count\") pageCount: Option[Int] = None"),
           book.contains("tags: List[String] = Nil"),
           book.contains(
-            "given JsonValueCodec[Book] = JsonCodecMaker.make(CodecMakerConfig.withAllowRecursiveTypes(true))"
+            "given JsonValueCodec[Book] = " +
+              "JsonCodecMaker.make(CodecMakerConfig.withTransientEmpty(false).withAllowRecursiveTypes(true))"
           ),
           shape.contains("sealed trait Shape"),
           shape.contains("withDiscriminatorFieldName(Some(\"type\"))"),
@@ -319,7 +320,10 @@ object OkapiCodegenSpec extends ZIOSpecDefault {
           books.contains(
             """request.get(uri"$baseUri/api/books?genre=$genre").header("X-Request-Id", xRequestId).response(asBody)"""
           ),
-          books.contains("private given listBookCodec: JsonValueCodec[List[Book]] = JsonCodecMaker.make"),
+          books.contains(
+            "private given listBookCodec: JsonValueCodec[List[Book]] = " +
+              "JsonCodecMaker.make(CodecMakerConfig.withTransientEmpty(false))"
+          ),
           books.contains("transport.unit(request.delete(uri\"$baseUri/api/books/$id\").response(asBody))"),
           cover.contains("multipart(\"file\", file).fileName(\"file\")"),
           cover.contains("caption.toList.map(v => multipart(\"caption\", v))"),
@@ -347,12 +351,48 @@ object OkapiCodegenSpec extends ZIOSpecDefault {
           none("books/client/BooksRoutes.scala").contains("def bookEvents(): F[List[ServerSentEvent]]"),
         )
       },
+      test("names from the document avoid Scala, sttp and generated names; discriminator values follow the mapping") {
+        val hostile = scala.util.Using.resource(scala.io.Source.fromResource("hostile.yaml"))(_.mkString)
+        val directory = Files.createTempDirectory("okapi-client").toFile
+        val s = settings(directory, pkg = "hostile.client").copy(api = Identifier.tpe("Hostile"))
+        val sources = OkapiCodegen
+          .generate(hostile, s)
+          .fold(e => throw new AssertionError(e), identity)
+          .filter(_.getName.endsWith(".scala"))
+          .map(f => f.getName -> Files.readString(f.toPath))
+          .toMap
+        assertTrue(
+          Set("ListModel.scala", "UriModel.scala", "RequestModel.scala", "StreamModel.scala").subsetOf(sources.keySet),
+          !sources.contains("List.scala"),
+          sources("Shape.scala").contains("@named(\"circle\")"),
+          sources("UserAccountsRoutes.scala").contains("def listItems2("),
+          sources("RequestModel.scala").contains("@named(\"class\") `class`: String") ||
+          sources("RequestModel.scala").contains("`class`: String"),
+          sources("Collide.scala").contains("@named(\"@type\") `type`: Option[String] = None, @named(\"type\") type2"),
+          sources("SttpHostile.scala")
+            .contains("override val _3dModels: _3dModelsRoutes[F] = Sttp_3dModelsRoutes(transport)"),
+          sources.contains("Sttp_3dModelsRoutes.scala"),
+          sources("SttpFilesRoutes.scala").contains("uri\"$baseUri/api/files/${name}.json\""),
+          sources("SttpFilesRoutes.scala").contains(""".header("X-Ids", xIds.mkString(","))"""),
+          sources("Shape.scala").contains("final case class Point() extends Shape"),
+          sources("Entry.scala").contains("withAllowRecursiveTypes(true)"),
+          !sources.contains("Odd.scala"),
+        )
+      },
+      test("a unique name stays a valid identifier when the wanted one is a keyword") {
+        val taken = Set(Identifier.term("type"))
+        assertTrue(
+          Identifier.unique(Identifier.term("type"), taken).value == "type2",
+          Identifier.unique(Identifier.term("type"), taken, suffix = "Client").value == "typeClient",
+        )
+      },
       test("without the split, every operation is on the root trait; without separate models, one Models.scala") {
         val sources = generated(split = false, separate = false)
         assertTrue(
           sources("books/client/Library.scala").contains("def uploadCover("),
           sources("books/client/impl/SttpLibrary.scala")
             .contains("(backend: Backend[F], baseUri: Uri, headers: Seq[Header] = Nil)"),
+          sources("books/client/impl/SttpLibrary.scala").contains("import sttp.model.{ Header, MediaType, Uri }"),
           sources.keySet.filter(_.contains("/models/")) == Set("books/client/models/Models.scala"),
         )
       },

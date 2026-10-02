@@ -35,6 +35,15 @@ private[codegen] object Source {
     (header ++ members.flatMap(m => List("", m))).mkString("", "\n", "\n")
   }
 
+  /** `JsonCodecMaker.make` writing empty collections, with `discriminator` as the discriminator field and recursive
+    * types allowed when `recursive`.
+    */
+  def codecMaker(recursive: Boolean, discriminator: Option[WireName] = None): String = {
+    "JsonCodecMaker.make(CodecMakerConfig.withTransientEmpty(false)" +
+      discriminator.fold("")(d => s".withDiscriminatorFieldName(Some(${d.literal}))") +
+      (if (recursive) ".withAllowRecursiveTypes(true)" else "") + ")"
+  }
+
   private def packageOf(name: String): String = name.substring(0, math.max(name.lastIndexOf('.'), 0))
 
   /** A scaladoc comment over `text`, indented by `indent`. */

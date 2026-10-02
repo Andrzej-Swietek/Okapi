@@ -5,6 +5,7 @@ import io.okapi.core.http.FileResponse
 import io.okapi.core.macros.EndpointsMacro
 import io.okapi.core.macros.model.{ ArgSlot, InputSource }
 import scala.quoted.*
+import scala.reflect.NameTransformer
 import sttp.client4.Backend
 import sttp.model.Uri
 
@@ -23,16 +24,49 @@ private[okapi] final class ClientMacro(quotes: Quotes) extends EndpointsMacro(qu
       if !described.spec.isEffect then {
         abort(s"Client method '${route.method.name}' must return ${TypeRepr.of[F].show}[A]")
       }
-      val key = Expr(s"${route.method.name}/${arity(described.spec)}")
+      val name = Expr(NameTransformer.encode(route.method.name))
+      val parameters = parameterTypes(route.method).map(t => Literal(ClassOfConstant(erasure(t))).asExprOf[Class[?]])
       val call = callOf[F](described, baseUri.asTerm, backend.asTerm, effect.asTerm).asExprOf[OkapiClientRuntime.Call]
-      '{ $key -> $call }
+      '{ OkapiClientRuntime.Route($name, List(${ Varargs(parameters) }*), $call) }
     }
     val apiClass = Literal(ClassOfConstant(api)).asExprOf[Class[Api]]
-    '{ OkapiClientRuntime.proxy[Api]($apiClass, Map(${ Varargs(calls) }*)) }
+    '{ OkapiClientRuntime.proxy[Api]($apiClass, List(${ Varargs(calls) }*)) }
   }
 
-  /** The number of term parameters across all clauses — what the proxy receives. */
-  private def arity(spec: MethodSpec): Int = spec.clauses.map(c => c.summoned.fold(c.slots.size)(_.size)).sum
+  /** The term parameter types of `method` across all clauses, as declared by its owner. */
+  private def parameterTypes(method: Symbol): List[TypeRepr] = {
+    def loop(tpe: TypeRepr): List[TypeRepr] = tpe match {
+      case MethodType(_, params, result) => params ++ loop(result)
+      case _ => Nil
+    }
+    loop(This(method.owner).tpe.memberType(method))
+  }
+
+  /** The type whose class the JVM erases a parameter of type `tpe` to; `Object` for a type it cannot resolve to a
+    * class.
+    */
+  private def erasure(tpe: TypeRepr): TypeRepr = tpe match {
+    case ByNameType(_) => TypeRepr.of[Function0[?]]
+    case _ =>
+      val t = tpe.dealias
+      val sym = t.typeSymbol
+      if sym == defn.RepeatedParamClass then TypeRepr.of[Seq[?]]
+      else if sym == defn.ArrayClass then {
+        t match {
+          case AppliedType(_, List(element)) if element.dealias.typeSymbol.isClassDef =>
+            defn.ArrayClass.typeRef.appliedTo(erasure(element))
+          case _ => TypeRepr.of[Object]
+        }
+      }
+      else if !sym.isClassDef then TypeRepr.of[Object]
+      else if t <:< TypeRepr.of[AnyVal] && !defn.ScalaPrimitiveValueClasses.contains(sym) then {
+        sym.primaryConstructor.paramSymss.flatten.find(_.isTerm) match {
+          case Some(field) => erasure(This(sym).tpe.memberType(sym.fieldMember(field.name)))
+          case None => TypeRepr.of[Object]
+        }
+      }
+      else t
+  }
 
   /** `{ val endpoint = ...; (args: Array[AnyRef | Null]) => OkapiClientRuntime.call(endpoint, ..., input(args)) }` */
   private def callOf[F[_]: Type](described: Described, baseUri: Term, backend: Term, effect: Term): Term = {

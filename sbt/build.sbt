@@ -4,6 +4,8 @@ name := "sbt-okapi"
 description := "sbt tasks writing an Okapi API's OpenAPI document and generating a client module from it with okapi-codegen."
 
 sbtPlugin := true
+// Maven Central takes only the sbt 1.9+ layout (sbt-okapi_sbt1_2.12)
+sbtPluginPublishLegacyMavenStyle := false
 scalaVersion := "2.12.20"
 scalacOptions ++= Seq("-Xlint:adapted-args", "-Xfatal-warnings")
 
@@ -27,3 +29,4 @@ Compile / sourceGenerators += Def.task {
 }.taskValue
 
 publishSettings
+zioTestSettings

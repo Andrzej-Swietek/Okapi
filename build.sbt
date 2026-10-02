@@ -22,7 +22,7 @@ lazy val okapiCodegenIt = project
     Test / sourceGenerators += Def.taskDyn {
       val out = (Test / sourceManaged).value / "client"
       Def.task {
-        (okapiCodegen / Test / runMain).toTask(s" io.okapi.codegen.GenerateFixture ${out.getAbsolutePath}").value
+        (okapiCodegen / Test / runMain).toTask(s""" io.okapi.codegen.GenerateFixture "${out.getAbsolutePath}"""").value
         (out ** "*.scala").get
       }
     }.taskValue

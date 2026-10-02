@@ -2,7 +2,7 @@ package io.okapi.codegen.render
 
 import scala.collection.mutable
 import io.okapi.codegen.*
-import Source.{ doc, file, importsOf, signature, streamImports, Jsoniter }
+import Source.{ codecMaker, doc, file, importsOf, signature, streamImports, Jsoniter }
 import StreamingSyntax.*
 
 /** Renders the sttp client4 implementation: a `Sttp<trait>` class per group over one shared `SttpTransport`, the root
@@ -12,16 +12,20 @@ private[codegen] object ImplRenderer {
 
   private val Codec = s"$Jsoniter.core.JsonValueCodec"
   private val Maker = s"$Jsoniter.macros.JsonCodecMaker"
+  private val Config = s"$Jsoniter.macros.CodecMakerConfig"
+
+  /** `Sttp<trait>`, the class implementing the trait `traitName`. */
+  private def implName(traitName: Identifier): Identifier = Identifier.tpeOrConverted("Sttp" + traitName.bare)
 
   def render(model: ClientModel, settings: Settings): List[SourceFile] = {
     val packages = settings.packages
-    val root = Identifier.tpe("Sttp" + settings.api.bare)
+    val root = implName(settings.api)
     val impls = model.groups match {
       case List(single) if single.traitName == settings.api =>
         List(SourceFile(packages.impl.file(root.bare), groupFile(single, model, settings, root, standalone = true)))
       case groups =>
         groups.map { g =>
-          val name = Identifier.tpe("Sttp" + g.traitName.bare)
+          val name = implName(g.traitName)
           SourceFile(packages.impl.file(name.bare), groupFile(g, model, settings, name, standalone = false))
         } :+ SourceFile(packages.impl.file(root.bare), rootFile(groups, settings, root))
     }
@@ -42,7 +46,8 @@ private[codegen] object ImplRenderer {
   private def rootFile(groups: List[Group], settings: Settings, root: Identifier): String = {
     val streaming = settings.streaming
     val accessors = groups.map { g =>
-      s"  override val ${g.accessor.value}: ${g.traitName.value}[${streaming.effect}] = Sttp${g.traitName.bare}(transport)"
+      s"  override val ${g.accessor.value}: ${g.traitName.value}[${streaming.effect}] = " +
+        s"${implName(g.traitName).value}(transport)"
     }
     val traits = settings.api.bare :: groups.map(_.traitName.bare)
     file(
@@ -65,11 +70,11 @@ private[codegen] object ImplRenderer {
     imports ++= streamImports(group.operations, streaming) ++ streaming.effectImports
     val members = mutable.SortedSet[String]("request")
     val codecs = localCodecs(group.operations.flatMap(jsonTypes), model)
-    if (codecs.nonEmpty) imports ++= List(Codec, Maker)
+    if (codecs.nonEmpty) imports ++= List(Codec, Maker, Config)
     val methods = group.operations.map(op => method(op, model, streaming, imports, members))
     val head =
       if (standalone) {
-        imports ++= streaming.backendImports ++ List("sttp.model.Header")
+        imports ++= streaming.backendImports ++ List("sttp.model.Header", "sttp.model.Uri")
         s"final class ${name.value}${streaming.typeParams}${constructor(streaming)} " +
           s"extends ${group.traitName.value}[${streaming.effect}] {\n" + TransportField
       }
@@ -78,8 +83,9 @@ private[codegen] object ImplRenderer {
         s"final class ${name.value}${streaming.typeParams}(transport: SttpTransport${streaming.typeArgs}) " +
           s"extends ${group.traitName.value}[${streaming.effect}] {\n"
       }
-    val givens =
-      codecs.map((codec, tpe) => s"  private given $codec: JsonValueCodec[${tpe.render}] = JsonCodecMaker.make")
+    val givens = codecs.map { (codec, tpe) =>
+      s"  private given $codec: JsonValueCodec[${tpe.render}] = ${codecMaker(model.isRecursive(tpe))}"
+    }
     val body = (List(head + s"  import transport.{ ${members.mkString(", ")} }\n") ++
       (if (givens.isEmpty) Nil else List(givens.mkString("", "\n", "\n"))) ++ methods).mkString("\n") + "}"
     val comment =
@@ -117,10 +123,10 @@ private[codegen] object ImplRenderer {
   private def text(value: String, tpe: TypeRef): String =
     if (tpe == TypeRef.Named("String")) value else s"$value.toString"
 
-  private def inner(tpe: TypeRef): TypeRef = tpe match {
-    case TypeRef.Opt(of) => of
-    case TypeRef.Seq(of, _) => of
-    case other => other
+  /** A header value: a list's values joined by commas, as OpenAPI's `simple` style sends them. */
+  private def headerValue(value: String, tpe: TypeRef): String = tpe match {
+    case _: TypeRef.Seq => s"""$value.mkString(",")"""
+    case other => text(value, other)
   }
 
   /** The method sending `op`; `members` collects the transport members it uses. */
@@ -133,11 +139,16 @@ private[codegen] object ImplRenderer {
   ): String = {
     val request = new StringBuilder(s"request.${op.method.sttp}(${uri(op)})")
     op.params.filter(_.location == ParamLocation.Header).foreach { p =>
-      if (p.default.isEmpty) request ++= s".header(${p.wire.literal}, ${text(p.name.value, p.tpe)})"
-      else {
-        imports += "sttp.model.Header"
-        request ++= s".headers(${p.name.value}.iterator.map(v => Header(${p.wire.literal}, ${text("v", inner(p.tpe))})).toSeq*)"
-      }
+      val (name, wire) = (p.name.value, p.wire.literal)
+      request ++= ((p.tpe, p.default) match {
+        case (TypeRef.Opt(of), Some(_)) =>
+          imports += "sttp.model.Header"
+          s".headers($name.map(v => Header($wire, ${headerValue("v", of)})).toSeq*)"
+        case (seq: TypeRef.Seq, Some(_)) =>
+          imports += "sttp.model.Header"
+          s".headers(Option.when($name.nonEmpty)(Header($wire, ${headerValue(name, seq)})).toSeq*)"
+        case (tpe, _) => s".header($wire, ${headerValue(name, tpe)})"
+      })
     }
     op.body.foreach {
       case RequestBody.Json(name, _) =>
@@ -178,13 +189,21 @@ private[codegen] object ImplRenderer {
   /** `uri"$baseUri/books/$id?limit=$limit"`; sttp leaves out a `None` query value and repeats a list's. */
   private def uri(op: Operation): String = {
     def escape(text: String) = text.replace("$", "$$").replace("\"", "%22").replace("\\", "%5C")
-    def splice(name: Identifier) = if (name.value == name.bare) "$" + name.value else s"$${${name.value}}"
-    val path = op.path.map {
-      case PathSegment.Literal(text) => escape(text)
-      case PathSegment.Capture(param) => splice(param)
+    def splice(name: Identifier, braced: Boolean) =
+      if (!braced && name.value == name.bare) "$" + name.value else s"$${${name.value}}"
+    val path = op.path.map { segment =>
+      val next = segment.parts.drop(1).map(Some(_)) :+ None
+      segment.parts
+        .zip(next)
+        .map {
+          case (PathPart.Literal(text), _) => escape(text)
+          case (PathPart.Capture(param), following) => splice(param, braced = following.isDefined)
+        }
+        .mkString
     }
-    val query =
-      op.params.filter(_.location == ParamLocation.Query).map(p => s"${escape(p.wire.value)}=${splice(p.name)}")
+    val query = op.params
+      .filter(_.location == ParamLocation.Query)
+      .map(p => s"${escape(p.wire.value)}=${splice(p.name, braced = false)}")
     "uri\"$baseUri/" + path.mkString("/") + (if (query.isEmpty) "" else query.mkString("?", "&", "")) + "\""
   }
 
@@ -264,10 +283,12 @@ private[codegen] object ImplRenderer {
         """
           |
           |object SttpTransport {
-          |  private def events(body: Array[Byte]): List[ServerSentEvent] = {
-          |    val text = new String(body, UTF_8).replace("\r\n", "\n")
-          |    text.split("\n\n").toList.filter(_.trim.nonEmpty).map(event => ServerSentEvent.parse(event.split("\n").toList))
-          |  }
+          |  private val Line = "\r?\n".r
+          |  private val BlankLine = "\r?\n\r?\n".r
+          |
+          |  private def events(body: Array[Byte]): List[ServerSentEvent] =
+          |    BlankLine.split(new String(body, UTF_8)).toList.filter(_.exists(!_.isWhitespace))
+          |      .map(event => ServerSentEvent.parse(Line.split(event).toList))
           |}""".stripMargin
       else ""
     val body =

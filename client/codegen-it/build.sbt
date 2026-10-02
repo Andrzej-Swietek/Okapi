@@ -11,4 +11,6 @@ libraryDependencies ++= Seq(
   "com.github.plokhotnyuk.jsoniter-scala" %% "jsoniter-scala-macros" % V.jsoniter % Test,
 )
 
+// the generated clients compile under Okapi's own warnings
+compilerSettings
 zioTestSettings

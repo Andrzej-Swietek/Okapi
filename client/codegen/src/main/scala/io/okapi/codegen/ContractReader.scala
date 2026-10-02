@@ -8,17 +8,37 @@ import sttp.tapir.codegen.openapi.models.OpenapiSchemaType.*
 
 /** Reads the [[ClientModel]] from an OpenAPI document.
   *
-  * Component schemas become models: objects become case classes, string enums become enums, and a `oneOf` with a
-  * discriminator becomes a sealed trait over its cases. Inline objects and enums become models named after where they
-  * appear. A schema with no Scala shape (`{}`, a `oneOf` without discriminator) is read as [[TypeRef.RawJson]].
+  * Component schemas become models: objects (and `allOf`s of objects, merged) become case classes, string enums become
+  * enums, and a `oneOf` with a discriminator becomes a sealed trait over its object components. Inline objects and
+  * enums become models named after where they appear. A schema with no Scala shape (`{}`, a `oneOf` without
+  * discriminator or object components, an inline `oneOf`) is read as [[TypeRef.RawJson]].
   */
 final class ContractReader(document: OpenapiDocument) {
 
-  private val schemas: Map[String, OpenapiSchemaType] = document.components.map(_.schemas).getOrElse(Map.empty)
+  private val declared: Map[String, OpenapiSchemaType] = document.components.map(_.schemas).getOrElse(Map.empty)
+
+  /** The component schemas, each `allOf` that [[mergeAllOf]] merges replaced by its object. */
+  private val schemas: Map[String, OpenapiSchemaType] = declared.map { (name, schema) =>
+    name -> (schema match {
+      case OpenapiSchemaAllOf(types) => mergeAllOf(types, Set(name)).getOrElse(schema)
+      case other => other
+    })
+  }
   private val sharedParameters = document.components.map(_.parameters).getOrElse(Map.empty)
 
   private val models = mutable.LinkedHashMap.empty[String, Model]
-  private val parents = mutable.Map.empty[String, List[(Identifier, WireName)]].withDefaultValue(Nil)
+
+  /** Per case: its sealed parents, their discriminator field, and the case's value in it. */
+  private val parents = mutable.Map.empty[String, List[(Identifier, WireName, String)]].withDefaultValue(Nil)
+
+  /** The model name of each component: its name as an identifier, suffixed when [[Reserved.types]] has it. */
+  private val modelNames: Map[String, Identifier] = {
+    schemas.keys.toList.sorted.foldLeft(Map.empty[String, Identifier]) { (named, component) =>
+      val base = Identifier.tpeOrConverted(component)
+      val wanted = if (Reserved.types.contains(base.bare)) base + "Model" else base
+      named + (component -> Identifier.unique(wanted, named.values.toSet))
+    }
+  }
 
   /** @param rootTrait
     *   the trait of the group with [[Grouping.Single]], and a name the controller traits do not take.
@@ -27,8 +47,11 @@ final class ContractReader(document: OpenapiDocument) {
     val components = schemas.toList.sortBy(_._1)
     components.foreach {
       case (name, OpenapiSchemaOneOf(types, Some(discriminator))) =>
-        caseNames(types).foreach { c =>
-          parents(c.value) = parents(c.value) :+ (modelName(name) -> WireName(discriminator.propertyName))
+        val mapped = discriminator.mapping.getOrElse(Map.empty).map((value, ref) => ref.stripPrefix(SchemaRef) -> value)
+        objectCases(types).foreach { component =>
+          val c = modelName(component)
+          val value = mapped.getOrElse(component, component)
+          parents(c.value) = parents(c.value) :+ (modelName(name), WireName(discriminator.propertyName), value)
         }
       case _ =>
     }
@@ -41,17 +64,19 @@ final class ContractReader(document: OpenapiDocument) {
     }
     val groups = grouping match {
       case Grouping.ByController(suffix) =>
-        operations.groupBy(_._1).toList.sortBy(_._1).map { (tag, ops) =>
-          val name = Identifier.tpe(Identifier.tpe(tag).bare.stripSuffix("Controller") match {
-            case "" => tag
-            case stripped => stripped
-          })
-          val traitName = Identifier.unique(name + suffix, Set(rootTrait), suffix = "Client")
-          Group(tag, traitName, Identifier.term(name.bare), uniqueNames(ops.map(op => withoutTag(op._2, tag))))
+        operations.groupBy(_._1).toList.sortBy(_._1).foldLeft(List.empty[Group]) {
+          case (done, (tag, ops)) =>
+            val name = Identifier.tpe(Identifier.tpe(tag).bare.stripSuffix("Controller") match {
+              case "" => tag
+              case stripped => stripped
+            })
+            val traitName = Identifier.unique(name + suffix, done.map(_.traitName).toSet + rootTrait, suffix = "Client")
+            val accessor = Identifier.unique(Identifier.term(name.bare), done.map(_.accessor).toSet ++ ReservedMembers)
+            done :+ Group(tag, traitName, accessor, uniqueNames(ops.map(op => withoutTag(op._2, tag))))
         }
       case Grouping.Single => List(Group("", rootTrait, rootTrait, uniqueNames(operations.map(_._2))))
     }
-    ClientModel(groups, markRecursive(models.values.toList))
+    ClientModel(groups, models.values.toList)
   }
 
   /** `booksStats` in `Books` → `stats`. */
@@ -67,21 +92,19 @@ final class ContractReader(document: OpenapiDocument) {
 
   private def uniqueNames(operations: List[Operation]): List[Operation] = {
     operations.foldLeft(List.empty[Operation]) { (done, op) =>
-      done :+ op.copy(name = Identifier.unique(op.name, done.map(_.name).toSet))
+      done :+ op.copy(name = Identifier.unique(op.name, done.map(_.name).toSet ++ ReservedMembers))
     }
   }
 
   private def operation(path: OpenapiPath, method: OpenapiPathMethod): Operation = {
     val name = Identifier.term(method.operationId.getOrElse(s"${method.methodType}-${path.url}"))
-    val segments = path.url.split('/').toList.filter(_.nonEmpty).map { segment =>
-      if (segment.startsWith("{") && segment.endsWith("}")) Left(segment.drop(1).dropRight(1)) else Right(segment)
-    }
-    val captures = segments.collect { case Left(wire) => wire }
+    val segments = path.url.split('/').toList.filter(_.nonEmpty).map(pathParts)
+    val captures = segments.flatten.collect { case Left(wire) => wire }
     val parameters = method.resolvedParameters
       .filter(p => Set("path", "query", "header").contains(p.in))
       .sortBy(p => if (p.in == "path") captures.indexOf(p.name) else Int.MaxValue)
 
-    val taken = mutable.Set.empty[Identifier]
+    val taken = mutable.Set.from(Reserved.parameters.map(Identifier.term))
     def claim(wanted: Identifier): Identifier = {
       val chosen = Identifier.unique(wanted, taken.toSet)
       taken += chosen
@@ -103,9 +126,11 @@ final class ContractReader(document: OpenapiDocument) {
     Operation(
       name = name,
       method = HttpMethod.valueOf(method.methodType.toLowerCase.capitalize),
-      path = segments.map {
-        case Left(wire) => PathSegment.Capture(params.find(_.wire.value == wire).fold(Identifier.term(wire))(_.name))
-        case Right(literal) => PathSegment.Literal(literal)
+      path = segments.map { parts =>
+        PathSegment(parts.map {
+          case Left(wire) => PathPart.Capture(params.find(_.wire.value == wire).fold(Identifier.term(wire))(_.name))
+          case Right(literal) => PathPart.Literal(literal)
+        })
       },
       params = pathParams ++ required ++ withDefaults,
       body =
@@ -114,6 +139,17 @@ final class ContractReader(document: OpenapiDocument) {
       summary = method.summary,
     )
   }
+
+  /** The captures (`Left`) and literal text (`Right`) of a path segment: `{name}.json` → `Left(name), Right(.json)`. */
+  private def pathParts(segment: String): List[Either[String, String]] = {
+    def literal(from: Int, to: Int) = if (to > from) List(Right(segment.substring(from, to))) else Nil
+    val (parts, end) = CapturePattern.findAllMatchIn(segment).foldLeft((List.empty[Either[String, String]], 0)) {
+      case ((done, at), found) => (done ++ literal(at, found.start) :+ Left(found.group(1)), found.end)
+    }
+    parts ++ literal(end, segment.length)
+  }
+
+  private val CapturePattern = "\\{([^{}]+)\\}".r
 
   private def streamsRequest(method: OpenapiPathMethod): Boolean =
     method.tapirCodegenDirectives.exists(
@@ -194,17 +230,55 @@ final class ContractReader(document: OpenapiDocument) {
     case other => (TypeRef.Opt(other), Some("None"))
   }
 
-  private def modelName(component: String): Identifier = Identifier.tpeOrConverted(component)
+  private val SchemaRef = "#/components/schemas/"
 
-  private def caseNames(types: Seq[OpenapiSchemaType]): List[Identifier] =
-    types.toList.collect { case ref: OpenapiSchemaRef if ref.isSchema => modelName(ref.stripped) }
+  private val ReservedMembers: Set[Identifier] = Reserved.members.map(Identifier.term)
+
+  private def modelName(component: String): Identifier =
+    modelNames.getOrElse(component, Identifier.tpeOrConverted(component))
+
+  /** The object components among `types`: the cases of a sealed trait over them. */
+  private def objectCases(types: Seq[OpenapiSchemaType]): List[String] = {
+    val components = types.toList.collect { case ref: OpenapiSchemaRef if ref.isSchema => ref.stripped }
+    components.filter(c => schemas.get(c).exists(_.isInstanceOf[OpenapiSchemaObject])).distinct
+  }
+
+  /** Whether `schema` is a model: an object, a string enum, or a `oneOf` with a discriminator and object cases. */
+  private def isModel(schema: OpenapiSchemaType): Boolean = schema match {
+    case _: OpenapiSchemaObject | _: OpenapiSchemaEnum => true
+    case OpenapiSchemaOneOf(types, Some(_)) => objectCases(types).nonEmpty
+    case _ => false
+  }
+
+  /** `types` merged into one object, when each is an object, an object component or such an `allOf`; `seen` are the
+    * components being merged.
+    */
+  private def mergeAllOf(types: Seq[OpenapiSchemaType], seen: Set[String]): Option[OpenapiSchemaObject] = {
+    val objects = types.toList.map {
+      case obj: OpenapiSchemaObject => Some(obj)
+      case ref: OpenapiSchemaRef if ref.isSchema && !seen.contains(ref.stripped) =>
+        declared.get(ref.stripped).flatMap {
+          case obj: OpenapiSchemaObject => Some(obj)
+          case OpenapiSchemaAllOf(inner) => mergeAllOf(inner, seen + ref.stripped)
+          case _ => None
+        }
+      case OpenapiSchemaAllOf(inner) => mergeAllOf(inner, seen)
+      case _ => None
+    }
+    if (objects.isEmpty || objects.contains(None)) None
+    else {
+      val all = objects.flatten
+      val properties = mutable.LinkedHashMap.from(all.flatMap(_.properties))
+      Some(OpenapiSchemaObject(properties, all.flatMap(_.required).distinct, all.forall(_.nullable)))
+    }
+  }
 
   /** Records the model of the component (or inline schema) `name`, when the schema has a Scala shape of its own. */
   private def declare(name: Identifier, schema: OpenapiSchemaType): Unit = schema match {
     case obj: OpenapiSchemaObject => models(name.value) = record(name, obj)
     case e: OpenapiSchemaEnum => models(name.value) = Model.StringEnum(name, enumValues(e))
-    case OpenapiSchemaOneOf(types, Some(discriminator)) =>
-      models(name.value) = Model.Sealed(name, WireName(discriminator.propertyName), caseNames(types), recursive = false)
+    case OpenapiSchemaOneOf(types, Some(discriminator)) if objectCases(types).nonEmpty =>
+      models(name.value) = Model.Sealed(name, WireName(discriminator.propertyName), objectCases(types).map(modelName))
     case _ =>
   }
 
@@ -216,13 +290,18 @@ final class ContractReader(document: OpenapiDocument) {
 
   private def record(name: Identifier, obj: OpenapiSchemaObject): Model.Record = {
     val discriminators = parents(name.value).map(_._2.value).toSet
-    val fields = obj.properties.toList.filterNot((wire, _) => discriminators.contains(wire)).map { (wire, field) =>
-      val tpe = typeOf(field.`type`, name.bare + Identifier.tpe(wire).bare)
-      val required = obj.required.contains(wire) && !field.`type`.nullable
-      val (fieldType, default) = if (required) (tpe, None) else optional(tpe)
-      Field(Identifier.term(wire), WireName(wire), fieldType, default)
+    val properties = obj.properties.toList.filterNot((wire, _) => discriminators.contains(wire))
+    val fields = properties.foldLeft(List.empty[Field]) {
+      case (done, (wire, field)) =>
+        val tpe = typeOf(field.`type`, name.bare + Identifier.tpe(wire).bare)
+        val required = obj.required.contains(wire) && !field.`type`.nullable
+        val (fieldType, default) = if (required) (tpe, None) else optional(tpe)
+        val term = Identifier.term(wire)
+        val wanted = if (Reserved.fields.contains(term.bare)) term + "Value" else term
+        done :+ Field(Identifier.unique(wanted, done.map(_.name).toSet), WireName(wire), fieldType, default)
     }
-    Model.Record(name, fields, parents(name.value).map(_._1), recursive = false)
+    val discriminator = parents(name.value).headOption.map(_._3).filter(_ != name.bare).map(WireName(_))
+    Model.Record(name, fields, parents(name.value).map(_._1), discriminator)
   }
 
   /** The Scala type of `schema`; `hint` names the model of an inline object or enum. */
@@ -241,42 +320,24 @@ final class ContractReader(document: OpenapiDocument) {
       case _: OpenapiSchemaDuration => TypeRef.Named("java.time.Duration")
       case ref: OpenapiSchemaRef if ref.isSchema =>
         schemas.get(ref.stripped) match {
-          case Some(_: OpenapiSchemaObject | _: OpenapiSchemaEnum | OpenapiSchemaOneOf(_, Some(_))) =>
-            TypeRef.Named(modelName(ref.stripped).value)
+          case Some(component) if isModel(component) => TypeRef.Named(modelName(ref.stripped).value)
           case Some(other) => typeOf(other, modelName(ref.stripped).bare)
           case None => TypeRef.Named(TypeRef.RawJson)
         }
       case OpenapiSchemaArray(items, _, _, restrictions) =>
         TypeRef.Seq(typeOf(items, hint + "Item"), restrictions.uniqueItems.contains(true))
       case OpenapiSchemaMap(items, _, _) => TypeRef.Dict(typeOf(items, hint + "Value"))
-      case inline @ (_: OpenapiSchemaObject | _: OpenapiSchemaEnum | OpenapiSchemaOneOf(_, Some(_))) =>
-        val taken = (models.keySet.toSet ++ schemas.keySet.map(modelName(_).value)).map(Identifier.tpeOrConverted)
+      case OpenapiSchemaAllOf(Seq(single)) => typeOf(single, hint)
+      case OpenapiSchemaAllOf(types) =>
+        mergeAllOf(types, Set.empty).fold(TypeRef.Named(TypeRef.RawJson))(typeOf(_, hint))
+      case inline @ (_: OpenapiSchemaObject | _: OpenapiSchemaEnum) =>
+        val taken =
+          (models.keySet.toSet ++ modelNames.values.map(_.value) ++ Reserved.types).map(Identifier.tpeOrConverted)
         val name = Identifier.unique(Identifier.tpe(hint), taken)
         declare(name, inline)
         TypeRef.Named(name.value)
       case _ => TypeRef.Named(TypeRef.RawJson)
     }
     if (schema.nullable) TypeRef.Opt(tpe) else tpe
-  }
-
-  /** Marks the models that reach themselves through their fields or cases. */
-  private def markRecursive(all: List[Model]): List[Model] = {
-    val known = all.map(_.name.value).toSet
-    val edges: Map[String, Set[String]] = all.map {
-      case r: Model.Record => r.name.value -> r.fields.flatMap(_.tpe.names).filter(known).toSet
-      case s: Model.Sealed => s.name.value -> s.cases.map(_.value).toSet
-      case e: Model.StringEnum => e.name.value -> Set.empty[String]
-    }.toMap
-    def reachesItself(start: String): Boolean = {
-      val seen = mutable.Set.empty[String]
-      def visit(name: String): Boolean =
-        edges.getOrElse(name, Set.empty).exists(next => next == start || (seen.add(next) && visit(next)))
-      visit(start)
-    }
-    all.map {
-      case r: Model.Record => r.copy(recursive = reachesItself(r.name.value))
-      case s: Model.Sealed => s.copy(recursive = reachesItself(s.name.value))
-      case e => e
-    }
   }
 }

@@ -96,7 +96,7 @@ object OkapiPlugin extends AutoPlugin {
       requireSpec(okapiSpec.?.value)
       val out = target.value / "okapi" / "openapi.yaml"
       Def.task {
-        (Test / runMain).toTask(s" $Runner spec ${out.getAbsolutePath}").value
+        (Test / runMain).toTask(s" $Runner spec ${quote(out.getAbsolutePath)}").value
         out
       }
     }.value,
@@ -109,7 +109,7 @@ object OkapiPlugin extends AutoPlugin {
       val scalafmtConfig = okapiClientScalafmtConfig.value
       val fallbackConfig = target.value / "okapi" / "scalafmt.conf"
       Def.task {
-        (Test / runMain).toTask(s" $Runner client ${properties.getAbsolutePath}").value
+        (Test / runMain).toTask(s" $Runner client ${quote(properties.getAbsolutePath)}").value
         val generated = (sources ** "*.scala").get
         ClientFormatter.format(generated, scalafmtConfig, fallbackConfig)
         generated ++ Seq(build).filter(_.exists)
@@ -152,6 +152,9 @@ object OkapiPlugin extends AutoPlugin {
     IO.createDirectory(file.getParentFile)
     IO.write(properties, "okapi-codegen settings, written by sbt-okapi", file)
   }
+
+  /** `arg` as one argument of an sbt input task such as `runMain`. */
+  private[sbt] def quote(arg: String): String = "\"" + arg.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
   private def runner(expression: String): String = {
     s"""package io.okapi.sbt.generated
