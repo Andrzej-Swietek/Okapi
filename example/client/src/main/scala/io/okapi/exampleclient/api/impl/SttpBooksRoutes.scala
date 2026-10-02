@@ -3,7 +3,7 @@ package io.okapi.exampleclient.api.impl
 import zio.Task
 
 import com.github.plokhotnyuk.jsoniter_scala.core.{ writeToArray, JsonValueCodec }
-import com.github.plokhotnyuk.jsoniter_scala.macros.JsonCodecMaker
+import com.github.plokhotnyuk.jsoniter_scala.macros.{ CodecMakerConfig, JsonCodecMaker }
 import io.okapi.exampleclient.api.BooksRoutes
 import io.okapi.exampleclient.api.models.{ Book, BookReview, BookStats, CreateBookRequest }
 import sttp.model.MediaType
@@ -13,8 +13,10 @@ import sttp.model.Uri.UriContext
 final class SttpBooksRoutes(transport: SttpTransport) extends BooksRoutes[Task] {
   import transport.{ asBody, baseUri, request }
 
-  private given listBookCodec: JsonValueCodec[List[Book]] = JsonCodecMaker.make
-  private given listBookReviewCodec: JsonValueCodec[List[BookReview]] = JsonCodecMaker.make
+  private given listBookCodec: JsonValueCodec[List[Book]] =
+    JsonCodecMaker.make(CodecMakerConfig.withTransientEmpty(false))
+  private given listBookReviewCodec: JsonValueCodec[List[BookReview]] =
+    JsonCodecMaker.make(CodecMakerConfig.withTransientEmpty(false))
 
   override def listBooks(genre: Option[String], limit: Option[Int]): Task[List[Book]] =
     transport.json[List[Book]](request.get(uri"$baseUri/api/books?genre=$genre&limit=$limit").response(asBody))
