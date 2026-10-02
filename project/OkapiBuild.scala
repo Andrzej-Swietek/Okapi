@@ -3,7 +3,7 @@ import sbt.Keys.*
 import xerial.sbt.Sonatype.autoImport.*
 import xerial.sbt.Sonatype.sonatypeCentralHost
 
-/** Versions and settings shared by every published Okapi module. */
+/** Versions and settings shared by the Okapi modules. */
 object OkapiBuild {
 
   object V {
@@ -13,7 +13,8 @@ object OkapiBuild {
     val tapir = "1.13.32"
     val zioLogging = "2.5.3"
     val jsoniter = "2.41.2"
-    val sttpShared = "1.5.2" // the sttp-shared version tapir depends on
+    val sttpClient4 = "4.0.26" // the sttp client4 version tapir depends on
+    val scalafmt = "3.11.5"
   }
 
   lazy val compilerSettings: Seq[Setting[?]] = Seq(
@@ -33,8 +34,8 @@ object OkapiBuild {
     externalResolvers ++= Seq(Resolver.defaultLocal),
   )
 
-  /** zio-http needs zio-json 1.x; tapir-json-zio is still built against 0.10, which zio-json 1.0 remains compatible
-    * with for the codec API tapir uses (checked by okapi-zio's zio-json tests).
+  /** Lets tapir-json-zio, built against zio-json 0.10, resolve to the zio-json 1.x zio-http needs; okapi-zio's zio-json
+    * tests cover the codec API tapir uses.
     */
   lazy val zioJsonScheme: Seq[Setting[?]] = Seq(
     libraryDependencySchemes += "dev.zio" %% "zio-json" % VersionScheme.Always
@@ -50,7 +51,7 @@ object OkapiBuild {
     testFrameworks := Seq(new TestFramework("zio.test.sbt.ZTestFramework")),
   )
 
-  // ---- Maven Central (Sonatype Central Portal) publishing ----
+  /** Publishing to Maven Central through the Sonatype Central Portal. */
   lazy val publishSettings: Seq[Setting[?]] = Seq(
     publishTo := sonatypePublishToBundle.value,
     publishMavenStyle := true,
