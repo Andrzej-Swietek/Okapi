@@ -34,9 +34,7 @@ object OkapiBuild {
     externalResolvers ++= Seq(Resolver.defaultLocal),
   )
 
-  /** Lets tapir-json-zio, built against zio-json 0.10, resolve to the zio-json 1.x zio-http needs; okapi-zio's zio-json
-    * tests cover the codec API tapir uses.
-    */
+  /** Lets tapir-json-zio, built against zio-json 0.10, resolve to zio-json 1.x in core's tests. */
   lazy val zioJsonScheme: Seq[Setting[?]] = Seq(
     libraryDependencySchemes += "dev.zio" %% "zio-json" % VersionScheme.Always
   )
@@ -70,7 +68,7 @@ object OkapiBuild {
       Developer(
         id = "Andrzej-Swietek",
         name = "Andrzej Świętek",
-        email = "aswietek@avsystem.com",
+        email = "a.swietek@avsystem.com",
         url = url("https://github.com/Andrzej-Swietek"),
       )
     ),

@@ -2,6 +2,7 @@ package io.okapi.metrics
 
 import java.time.{ Clock, Duration }
 
+import scala.util.control.NonFatal
 import sttp.tapir.AnyEndpoint
 import sttp.tapir.server.interceptor.metrics.MetricsRequestInterceptor
 import sttp.tapir.server.metrics.{ EndpointMetric, Metric }
@@ -24,7 +25,8 @@ final case class RequestRecord(
 object OkapiMetrics {
 
   /** Calls `record` once per request that matched an endpoint, when its response body is complete; a failure of the
-    * server logic is recorded with status 500. Add it to the server options with `metricsInterceptor`.
+    * server logic is recorded with status 500. A failure of `record` itself is ignored and leaves the response
+    * unchanged. Add it to the server options with `metricsInterceptor`.
     */
   def interceptor[F[_]](
     record: RequestRecord => F[Unit],
@@ -39,7 +41,7 @@ object OkapiMetrics {
         monad.eval {
           val start = clock.instant().nn
           def done(endpoint: AnyEndpoint, status: Int): F[Unit] = {
-            monad.suspend {
+            val recorded = monad.suspend {
               record(
                 RequestRecord(
                   method = request.method.method,
@@ -50,6 +52,7 @@ object OkapiMetrics {
                 )
               )
             }
+            monad.handleError(recorded) { case NonFatal(_) => monad.unit(()) }
           }
           EndpointMetric[F]().onResponseBody((endpoint, response) => done(endpoint, response.code.code)).onException {
             (endpoint, _) => done(endpoint, 500)

@@ -1,5 +1,6 @@
 package io.okapi.core.macros
 
+import zio.{ EnvironmentTag, ZLayer }
 import zio.http.{ Response, Routes }
 
 import io.okapi.core.macros.layers.LayerMacro
@@ -35,6 +36,10 @@ private[okapi] object ZioAnnotationProcessor {
   transparent inline def autoLayer[Types <: Tuple]: Any =
     ${ autoLayerImpl[Types] }
 
+  /** [[io.okapi.core.Okapi.RegisterPartiallyApplied]] over `controllerLayers[Types]`. */
+  transparent inline def register[Types <: Tuple]: Any =
+    ${ registerImpl[Types] }
+
   private def endpointsImpl[C: Type](using q: Quotes): Expr[List[ServerEndpoint[WebSockets, ?]]] =
     ZioEndpointsMacro(q).controllerEndpoints[C].asExprOf[List[ServerEndpoint[WebSockets, ?]]]
 
@@ -57,5 +62,22 @@ private[okapi] object ZioAnnotationProcessor {
   private def autoLayerImpl[Types: Type](using q: Quotes): Expr[Any] = {
     val layers = LayerMacro(q)
     layers.expand[Types](layers.ConstructorGraph)
+  }
+
+  private def registerImpl[Types: Type](using q: Quotes): Expr[Any] = {
+    import q.reflect.*
+    val layer = controllerLayersImpl[Types]
+    layer.asTerm.tpe.widen.dealias.asType match {
+      case '[ZLayer[Any, e, env]] =>
+        val tag = Expr.summon[EnvironmentTag[env]].getOrElse {
+          report.errorAndAbort(s"No zio.EnvironmentTag for ${TypeRepr.of[env].show}: its layers cannot be provided.")
+        }
+        '{ io.okapi.core.Okapi.RegisterPartiallyApplied[env, e](${ layer.asExprOf[ZLayer[Any, e, env]] })(using $tag) }
+      case _ =>
+        report.errorAndAbort(
+          s"Okapi cannot provide the layers of ${TypeRepr.of[Types].show}: expected a ZLayer[Any, E, Env], " +
+            s"got ${layer.asTerm.tpe.widen.show}. Provide Okapi.controllerLayers with ZIO's provideSomeLayer instead."
+        )
+    }
   }
 }

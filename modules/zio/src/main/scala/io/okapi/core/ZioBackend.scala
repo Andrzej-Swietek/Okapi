@@ -20,14 +20,22 @@ object ZioBackend {
   val InternalErrorMessage = "Internal server error"
 
   /** Classifies a handler's failure. An [[ApiError]] — failed directly, wrapped in [[ApiErrorException]], or a defect
-    * that is an `ApiErrorException` (e.g. after `.orDie`) — is returned as is. Any other failure or defect is logged
-    * and becomes [[ApiError.Internal]] with [[InternalErrorMessage]]; its message is not sent to the client. Pure
-    * interruption propagates unchanged.
+    * that is an `ApiErrorException` (e.g. after `.orDie`) — is returned as is; other defects in the same cause are
+    * logged. Any other failure or defect is logged and becomes [[ApiError.Internal]] with [[InternalErrorMessage]]; its
+    * message is not sent to the client. Pure interruption propagates unchanged.
     */
   def outcome[R, A](handler: Handler[R, A]): ZIO[R, Nothing, Either[ApiError, A]] = {
     handler.foldCauseZIO(
       cause => {
         apiErrorOf(cause) match {
+          case Some(error) if otherDefects(cause).nonEmpty =>
+            ZIO
+              .logErrorCause(
+                "An Okapi controller method failed with an ApiError and also died; the client got the ApiError's " +
+                  "status and the defect is not sent. Fix the defect.",
+                cause,
+              )
+              .as(Left(error))
           case Some(error) => ZIO.succeed(Left(error))
           case None if cause.isInterruptedOnly => ZIO.failCause(cause.stripFailures)
           case None =>
@@ -53,6 +61,12 @@ object ZioBackend {
       .orElse(cause.dieOption.collect { case ApiErrorException(error) => error })
   }
 
+  private def otherDefects(cause: Cause[ApiError | Throwable]): List[Throwable] =
+    cause.defects.filter {
+      case ApiErrorException(_) => false
+      case _ => true
+    }
+
   given zioEffect[R]: OkapiEffect[[x] =>> Handler[R, x]] with {
     val monad: MonadError[[x] =>> Handler[R, x]] = HandlerMonad[R]()
 
@@ -69,25 +83,27 @@ object ZioBackend {
     val effect: OkapiEffect[[x] =>> Handler[R, x]] = zioEffect[R]
     val monad: MonadError[[x] =>> RIO[C & Extra, x]] = new RIOMonadError[C & Extra]
 
-    protected def provide[A](effect: ZIO[R & C, Nothing, A]): ZIO[C & Extra, Nothing, A]
+    /** `handler` with every requirement besides `C & Extra` provided. */
+    protected def provide[A](handler: Handler[R, A]): Handler[C & Extra, A]
 
     def run[A](call: C => Handler[R, A]): RIO[C & Extra, Either[ApiError, A]] = {
       // suspended: a method that throws while building its effect is classified like any other failure
-      provide(ZIO.serviceWithZIO[C](controller => outcome(ZIO.suspendSucceed(call(controller)))))
+      ZIO.serviceWithZIO[C](controller => outcome(provide(ZIO.suspendSucceed(call(controller)))))
     }
   }
 
   /** For controllers whose methods need `C & Extra` from the environment. */
   final class EnvironmentHost[C: Tag, Extra] extends ZioHost[C, C & Extra, Extra] {
-    protected def provide[A](effect: ZIO[C & Extra, Nothing, A]): ZIO[C & Extra, Nothing, A] = effect
+    protected def provide[A](handler: Handler[C & Extra, A]): Handler[C & Extra, A] = handler
   }
 
   /** For controllers with a method needing a `Scope`: every request runs in its own scope, closed once the method's
-    * effect completes. A stream or WebSocket pipe returned from the method must not use a resource of that scope.
+    * effect completes; a finalizer's defect is classified by [[outcome]]. A stream or WebSocket pipe returned from the
+    * method must not use a resource of that scope.
     */
   final class ScopedEnvironmentHost[C: Tag, Extra] extends ZioHost[C, C & Extra & Scope, Extra] {
-    protected def provide[A](effect: ZIO[C & Extra & Scope, Nothing, A]): ZIO[C & Extra, Nothing, A] =
-      ZIO.scoped[C & Extra](effect)
+    protected def provide[A](handler: Handler[C & Extra & Scope, A]): Handler[C & Extra, A] =
+      ZIO.scoped[C & Extra](handler)
   }
 
   private final class HandlerMonad[R] extends MonadError[[x] =>> Handler[R, x]] {

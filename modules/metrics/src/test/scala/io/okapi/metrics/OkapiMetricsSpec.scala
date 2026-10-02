@@ -1,11 +1,11 @@
 package io.okapi.metrics
 
 import zio.{ Ref, Task, UIO, ZIO, ZLayer }
-import zio.http.{ Handler, HandlerAspect, Request, Response, URL }
+import zio.http.{ Handler, HandlerAspect, Request, Response, Status, URL }
 import zio.test.*
 
 import io.okapi.core.Okapi
-import io.okapi.core.annotations.{ ApiTag, Controller, Get, Path }
+import io.okapi.core.annotations.{ ApiTag, Controller, Delete, Get, Path }
 import io.prometheus.metrics.model.registry.PrometheusRegistry
 import sttp.tapir.server.ziohttp.{ ZioHttpInterpreter, ZioHttpServerOptions }
 
@@ -17,6 +17,9 @@ object OkapiMetricsSpec extends ZIOSpecDefault {
 
     @Get("/{id}")
     def get(@Path("id") id: Int): UIO[String] = ZIO.succeed(s"item $id")
+
+    @Delete("/{id}")
+    def remove(@Path("id") id: Int): UIO[Unit] = ZIO.unit
   }
 
   /** A service a zio-http middleware needs from the environment. */
@@ -60,6 +63,23 @@ object OkapiMetricsSpec extends ZIOSpecDefault {
           ),
           recorded.forall(!_.duration.isNegative),
         )
+      },
+      test("a failing record callback leaves a 204 response unchanged and is called once") {
+        for {
+          calls <- Ref.make(0)
+          options = ZioHttpServerOptions
+            .customiseInterceptors[Any]
+            .metricsInterceptor(
+              OkapiMetrics.interceptor[Task](_ => calls.update(_ + 1) *> ZIO.fail(new IllegalStateException("down")))
+            )
+            .options
+          routes = Okapi.httpRoutes[MeteredController](options)
+          status <- ZIO
+            .scoped(routes.runZIO(Request.delete(URL.decode("/metered/1").toOption.get)))
+            .map(_.status)
+            .provide(ZLayer.succeed(MeteredController()))
+          called <- calls.get
+        } yield assertTrue(status == Status.NoContent, called == 1)
       },
       test("a zio-http middleware needing the environment applies to Okapi routes") {
         val logging: HandlerAspect[RequestLog, Unit] = HandlerAspect.interceptIncomingHandler(

@@ -8,6 +8,5 @@ libraryDependencies ++= Seq(
 )
 
 compilerSettings
-zioJsonScheme
 zioTestSettings
 publishSettings

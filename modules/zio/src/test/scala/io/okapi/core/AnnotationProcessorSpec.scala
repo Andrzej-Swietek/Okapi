@@ -507,16 +507,14 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
             }
           } yield assertTrue(response.status == Status.NotFound)
         },
-        test("path param with non-integer value returns 400 or 404") {
+        test("path param with non-integer value returns 400") {
           val request = Request.get("/api/nested/items/not-a-number/details")
 
           for {
             response <- ZIO.scoped {
               nestedRoutes.runZIO(request).provideSome[Scope](ZLayer.succeed(new NestedController))
             }
-          } yield assertTrue(
-            response.status == Status.BadRequest || response.status == Status.NotFound
-          )
+          } yield assertTrue(response.status == Status.BadRequest)
         },
         test("path normalization handles leading slashes correctly") {
           val endpoints = Okapi.generateEndpoints[NestedController]
@@ -579,9 +577,19 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
           assertTrue(bytes(1) == 2.toByte) &&
           assertTrue(bytes(2) == 3.toByte)
         },
-        test("String return type uses string body regardless of @Produces") {
-          val endpoints = Okapi.generateEndpoints[ContentController]
-          assertTrue(endpoints.nonEmpty)
+        test("String return type without @Produces is a raw text/plain body") {
+          for {
+            response <- ZIO.scoped {
+              contentRoutes
+                .runZIO(Request.get("/api/content/json-str"))
+                .provideSome[Scope](ZLayer.succeed(new ContentController))
+            }
+            body <- response.body.asString
+          } yield assertTrue(
+            response.status == Status.Ok,
+            body == "raw string",
+            response.headers.get("Content-Type").exists(_.startsWith("text/plain")),
+          )
         },
       ),
       suite("auto layer")(
@@ -840,7 +848,7 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
             assertTrue(resp.status.code == 200) && assertTrue(hasFilename) && assertTrue(body == "hello")
           }
         },
-        test("FileResponse strips quotes and CR/LF from the filename") {
+        test("FileResponse replaces quotes and control characters in the filename with '_'") {
           val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[FileController])
           for {
             resp <- ZIO.scoped(
@@ -848,7 +856,7 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
             )
           } yield {
             val cd = resp.headers.get("Content-Disposition").getOrElse("")
-            val sanitized = cd.contains("filename=\"evilname.txt\"")
+            val sanitized = cd.contains("filename=\"ev_il__name.txt\"")
             val noCr = !cd.contains("\r")
             val noLf = !cd.contains("\n")
             assertTrue(sanitized) && assertTrue(noCr) && assertTrue(noLf)
@@ -865,16 +873,13 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
             body <- resp.body.asString
           } yield assertTrue(resp.status.code == 200) && assertTrue(body.contains("token=secret123"))
         },
-        test("@BearerAuth without a token is rejected (4xx)") {
+        test("@BearerAuth without a token is rejected with 401") {
           val routes = ZioHttpInterpreter().toHttp(Okapi.endpoints[SecureController])
           for {
             resp <- ZIO.scoped(
               routes.runZIO(Request.get("/api/secure/me")).provideSome[Scope](ZLayer.succeed(new SecureController))
             )
-          } yield {
-            val rejected = resp.status.code == 401 || resp.status.code == 400
-            assertTrue(rejected)
-          }
+          } yield assertTrue(resp.status == Status.Unauthorized)
         },
       ),
       suite("websocket generation")(

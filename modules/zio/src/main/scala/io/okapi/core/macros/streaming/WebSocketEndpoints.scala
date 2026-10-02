@@ -2,6 +2,7 @@ package io.okapi.core.macros.streaming
 
 import zio.stream.ZStream
 
+import io.okapi.core.WsPipe
 import io.okapi.core.macros.endpoints.EndpointGeneration
 import io.okapi.core.macros.model.OkapiAnnotation
 import scala.quoted.*
@@ -48,7 +49,7 @@ private[okapi] trait WebSocketEndpoints extends EndpointGeneration {
       }
     }
 
-    /** `(In, Out)` out of `ZStream[_, _, In] => ZStream[_, _, Out]` (i.e. `WsPipe[In, Out]`). */
+    /** `(In, Out)` of a method returning `WsPipe[In, Out]`; any other result type is a compile error. */
     private def messageTypes(spec: MethodSpec): (TypeRepr, TypeRepr) = {
       val zstream = TypeRepr.of[ZStream[Any, Throwable, Any]].typeSymbol
       spec.output.dealias match {
@@ -56,12 +57,30 @@ private[okapi] trait WebSocketEndpoints extends EndpointGeneration {
           (inStream.dealias, outStream.dealias) match {
             case (AppliedType(zsi, List(_, _, in)), AppliedType(zso, List(_, _, out)))
                  if zsi.typeSymbol == zstream && zso.typeSymbol == zstream =>
+              requirePipe(spec, in, out)
               (in, out)
             case _ => notAPipe(spec)
           }
         case _ => notAPipe(spec)
       }
     }
+
+    private def requirePipe(spec: MethodSpec, in: TypeRepr, out: TypeRepr): Unit = {
+      (in.asType, out.asType) match {
+        case ('[i], '[o]) =>
+          if !(spec.output <:< TypeRepr.of[WsPipe[i, o]]) then {
+            abort(
+              s"@WebSocket method '${spec.symbol.name}' returns ${short(spec.output)}, which is not a " +
+                s"WsPipe[${short(in)}, ${short(out)}]: Okapi runs the pipe on a ZStream[Any, Throwable, ${short(in)}] and " +
+                s"expects a ZStream[Any, Throwable, ${short(out)}], so a stream needing an environment fails when it " +
+                "runs and a non-Throwable error breaks the connection. Provide the stream's environment in the method " +
+                "(e.g. `.provideEnvironment`) and map its errors to a Throwable (e.g. `.mapError(ApiErrorException(_))`)."
+            )
+          }
+      }
+    }
+
+    private def short(tpe: TypeRepr): String = tpe.show(using Printer.TypeReprShortCode)
 
     private def notAPipe(spec: MethodSpec): Nothing = {
       abort(

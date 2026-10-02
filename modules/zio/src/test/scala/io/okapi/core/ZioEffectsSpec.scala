@@ -59,6 +59,10 @@ object ZioEffectsSpec extends ZIOSpecDefault {
     @Get("/died-api-error")
     def diedApiError: UIO[Msg] = ZIO.fail(ApiErrorException(ApiError.NotFound("gone"))).orDie
 
+    @Get("/api-error-and-defect")
+    def apiErrorAndDefect: IO[ApiError, Msg] =
+      ZIO.fail(ApiError.NotFound("missing")).ensuring(ZIO.die(new IllegalStateException("cleanup bug")))
+
     @Get("/union")
     def union(@Query("fail") fail: String): ZIO[Any, ApiError | Throwable, Msg] = {
       fail match {
@@ -96,6 +100,13 @@ object ZioEffectsSpec extends ZIOSpecDefault {
       ZIO
         .acquireRelease(ZIO.succeed(log.events.add("acquire")))(_ => ZIO.succeed(log.events.add("release")))
         .as(Msg(s"inside: ${log.all.mkString(",")}"))
+    }
+
+    @Get("/dying-finalizer")
+    def dyingFinalizer: ZIO[Scope, ApiError, Msg] = {
+      ZIO
+        .acquireRelease(ZIO.unit)(_ => ZIO.die(new java.io.IOException("cannot close /srv/secret.db")))
+        .as(Msg("closed"))
     }
   }
 
@@ -293,6 +304,17 @@ object ZioEffectsSpec extends ZIOSpecDefault {
     def name: UIO[Msg] = ZIO.succeed(Msg(config.name))
   }
 
+  final class EventBus(val events: zio.Hub[String], val jobs: zio.Queue[Int])
+
+  final class Salutation(val text: String)
+
+  object Salutation {
+    given ZLayer.Derive.Default.WithContext[Greeter, Nothing, Salutation] =
+      ZLayer.Derive.Default.fromZIO(ZIO.serviceWith[Greeter](g => Salutation(g.greet("default"))))
+  }
+
+  final class Welcome(val salutation: Salutation)
+
   trait Clock {
     def now: Long
   }
@@ -392,6 +414,17 @@ object ZioEffectsSpec extends ZIOSpecDefault {
           fxGet("/fx/died-api-error")
             .map((status, body) => assertTrue(status == Status.NotFound, body.contains("gone")))
         },
+        test("a defect accompanying an ApiError is logged; the client gets the ApiError") {
+          for {
+            (status, body) <- fxGet("/fx/api-error-and-defect")
+            logs <- ZTestLogger.logOutput
+          } yield assertTrue(
+            status == Status.NotFound,
+            body.contains("missing"),
+            !body.contains("cleanup bug"),
+            logs.exists(_.cause.defects.exists(_.getMessage == "cleanup bug")),
+          )
+        },
         test("an unsupported error type is a compile error") {
           typeCheck {
             """
@@ -416,12 +449,12 @@ object ZioEffectsSpec extends ZIOSpecDefault {
         }.provide(ZLayer.succeed(EnvController()), ZLayer.succeed(Greeter()), ZLayer.succeed(Prefix("dear"))),
         test("a missing environment is a compile error") {
           typeCheck("val r: Routes[EnvController, Response] = Okapi.httpRoutes[EnvController]")
-            .map(result => assertTrue(result.isLeft))
+            .map(result => assertTrue(result.left.exists(e => e.contains("Greeter") && e.contains("Prefix"))))
         },
         test("a controller without extra requirements keeps its plain type") {
           val endpoints: List[sttp.tapir.ztapir.ZServerEndpoint[EffectsController, sttp.capabilities.WebSockets]] =
             Okapi.endpoints[EffectsController]
-          assertTrue(endpoints.size == 11)
+          assertTrue(endpoints.size == 12)
         },
         test("routes over several controllers require the union of their environments") {
           val routes: Routes[EffectsController & EnvController & Greeter & Prefix, Response] =
@@ -452,6 +485,20 @@ object ZioEffectsSpec extends ZIOSpecDefault {
             second == (Status.Ok, """{"text":"inside: acquire,release,acquire"}"""),
             log.all == List("acquire", "release", "acquire", "release"),
           )).provide(ZLayer.succeed(ScopedController(log)))
+        },
+        test("a dying finalizer of the request's scope becomes a logged 500 without leaking its message") {
+          (for {
+            (status, body) <- get(Okapi.httpRoutes[ScopedController], "/scoped/dying-finalizer")
+            logs <- ZTestLogger.logOutput
+          } yield assertTrue(
+            status == Status.InternalServerError,
+            body.contains(ZioBackend.InternalErrorMessage),
+            !body.contains("secret.db"),
+            logs.exists { entry =>
+              entry.message().contains("Unhandled failure") &&
+              entry.cause.defects.exists(_.getMessage == "cannot close /srv/secret.db")
+            },
+          )).provide(ZLayer.succeed(ScopedController(ResourceLog())))
         },
       ),
       suite("signature and annotation shapes")(
@@ -553,6 +600,46 @@ object ZioEffectsSpec extends ZIOSpecDefault {
         }
       ),
       suite("streams")(
+        test("a response stream needing an environment or failing with a non-Throwable is a compile error") {
+          for {
+            environment <- typeCheck {
+              """
+              @Controller("/s") final class S { @Get("/x") def x: zio.stream.ZStream[Greeter, Throwable, Byte] = zio.stream.ZStream.empty }
+              Okapi.endpoints[S]
+              """
+            }
+            error <- typeCheck {
+              """
+              @Controller("/s") final class S { @Get("/x") def x: zio.stream.ZStream[Any, ApiError, Byte] = zio.stream.ZStream.empty }
+              Okapi.endpoints[S]
+              """
+            }
+            events <- typeCheck {
+              """
+              @Controller("/s") final class S {
+                @Get("/x") def x: zio.stream.ZStream[Greeter, Throwable, sttp.model.sse.ServerSentEvent] = zio.stream.ZStream.empty
+              }
+              Okapi.endpoints[S]
+              """
+            }
+          } yield assertTrue(
+            environment.left.exists(_.contains("Okapi runs it as a ZStream[Any, Throwable, Byte]")),
+            error.left.exists(_.contains("Okapi runs it as a ZStream[Any, Throwable, Byte]")),
+            events.left.exists(_.contains("Okapi runs it as a ZStream[Any, Throwable, ServerSentEvent]")),
+          )
+        },
+        test("a request stream of another error type is a compile error") {
+          typeCheck {
+            """
+            @Controller("/s") final class S {
+              @Post("/x") def x(@RequestBody body: zio.stream.ZStream[Any, ApiError, Byte]): UIO[Msg] = ZIO.succeed(Msg(""))
+            }
+            Okapi.endpoints[S]
+            """
+          }.map { result =>
+            assertTrue(result.left.exists(_.contains("Okapi passes the body as a ZStream[Any, Throwable, Byte]")))
+          }
+        },
         test("server-sent events and byte streams with a declared media type") {
           val routes = Okapi.httpRoutes[StreamsController]
           def run(path: String) = {
@@ -569,7 +656,7 @@ object ZioEffectsSpec extends ZIOSpecDefault {
             csv.rawHeader("Content-Type").exists(_.startsWith("text/csv")),
             csvBody == "a,b\n",
           )).provide(ZLayer.succeed(StreamsController()))
-        }
+        },
       ),
       suite("WebSocket")(
         test("ping interval per endpoint, typed JSON frames") {
@@ -587,6 +674,30 @@ object ZioEffectsSpec extends ZIOSpecDefault {
             decoded == sttp.tapir.DecodeResult.Value(ChatIn("yo")),
           )
         },
+        test("a WebSocket pipe needing an environment or failing with a non-Throwable is a compile error") {
+          for {
+            environment <- typeCheck {
+              """
+              @Controller("/w") final class W {
+                @WebSocket("/x") def x: zio.stream.ZStream[Any, Throwable, String] => zio.stream.ZStream[Greeter, Throwable, String] = identity
+              }
+              Okapi.endpoints[W]
+              """
+            }
+            error <- typeCheck {
+              """
+              @Controller("/w") final class W {
+                @WebSocket("/x") def x: zio.stream.ZStream[Any, Throwable, String] => zio.stream.ZStream[Any, ApiError, String] =
+                  _ => zio.stream.ZStream.fail(ApiError.NotFound("none"))
+              }
+              Okapi.endpoints[W]
+              """
+            }
+          } yield assertTrue(
+            environment.left.exists(_.contains("which is not a WsPipe[String, String]")),
+            error.left.exists(_.contains("which is not a WsPipe[String, String]")),
+          )
+        },
         test("library-typed dependencies become the layer's input") {
           val layer: ZLayer[zio.Random, Nothing, RandomController] = Okapi.autoLayer[Tuple1[RandomController]]
           assertTrue(layer != ZLayer.empty)
@@ -602,6 +713,21 @@ object ZioEffectsSpec extends ZIOSpecDefault {
           val _ = summon[layer.type <:< ZLayer[Any, String, Hooked]]
           val _ = summon[scala.util.NotGiven[layer.type <:< ZLayer[Any, Nothing, Hooked]]]
           ZIO.scoped(layer.build).exit.map(exit => assertTrue(exit.isFailure))
+        },
+        test("a dependency with a ZLayer.Derive.Default is built from it; only the default's environment is an input") {
+          val config: ZLayer[Any, zio.Config.Error, ConfigController] = Okapi.autoLayer[Tuple1[ConfigController]]
+          val bus: ZLayer[Any, Nothing, EventBus] = Okapi.autoLayer[Tuple1[EventBus]]
+          val welcome: ZLayer[Greeter, Nothing, Welcome] = Okapi.autoLayer[Tuple1[Welcome]]
+          ZIO
+            .serviceWith[Welcome](_.salutation.text)
+            .provide(welcome, ZLayer.succeed(Greeter()))
+            .map(text => assertTrue(text == "hello default", config != ZLayer.empty, bus != ZLayer.empty))
+        },
+        test("registerOkapiControllers keeps the layers' error type") {
+          val program = Okapi.registerOkapiControllers[Tuple1[ConfigController]](ZIO.service[ConfigController].as(1))
+          val _ = summon[program.type <:< ZIO[Any, zio.Config.Error, Int]]
+          val _ = summon[scala.util.NotGiven[program.type <:< ZIO[Any, Nothing, Int]]]
+          program.exit.map(exit => assertTrue(exit.isFailure))
         },
         test("abstract dependencies become the layer's input") {
           val layer: ZLayer[Clock, Nothing, TimeController] = Okapi.autoLayer[Tuple1[TimeController]]

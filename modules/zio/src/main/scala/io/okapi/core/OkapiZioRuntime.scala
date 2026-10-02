@@ -19,9 +19,19 @@ import sttp.ws.WebSocketFrame
   */
 object OkapiZioRuntime {
 
-  /** A Tapir JSON codec from a zio-json codec and `schema`. */
-  def zioJsonCodec[T](codec: zio.json.JsonCodec[T], schema: Schema[T]): Codec[String, T, CodecFormat.Json] =
-    sttp.tapir.json.zio.zioCodec[T](using codec.encoder, codec.decoder, schema)
+  /** A Tapir JSON codec from a zio-json codec and `schema`; a body it cannot decode is a
+    * [[DecodeResult.Error.JsonDecodeException]] carrying zio-json's message.
+    */
+  def zioJsonCodec[T](codec: zio.json.JsonCodec[T], schema: Schema[T]): Codec[String, T, CodecFormat.Json] = {
+    Codec.json[T] { json =>
+      codec.decoder.decodeJson(json) match {
+        case Right(value) => DecodeResult.Value(value)
+        case Left(message) =>
+          val error = DecodeResult.Error.JsonError(message, Nil)
+          DecodeResult.Error(json, DecodeResult.Error.JsonDecodeException(List(error), new Exception(message)))
+      }
+    }(value => codec.encoder.encodeJson(value, None).toString)(using schema)
+  }
 
   /** ZIO HTTP routes needing exactly the environment `R` the endpoints run in, interpreted with `options` (Tapir
     * interceptors: CORS, metrics, logging, error handling, ...).

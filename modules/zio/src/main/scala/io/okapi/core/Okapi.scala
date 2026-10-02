@@ -1,6 +1,6 @@
 package io.okapi.core
 
-import zio.{ Task, ZIO, ZLayer }
+import zio.{ EnvironmentTag, Task, ZIO, ZLayer }
 import zio.http.{ Response, Routes }
 
 import io.okapi.openapi.OkapiDocs
@@ -11,24 +11,10 @@ import sttp.tapir.server.ziohttp.{ ZioHttpInterpreter, ZioHttpServerOptions }
 
 object Okapi {
 
-  final class RegisterControllersPartiallyApplied[Types <: Tuple] {
-    inline def apply[R, E, A](
-      effect: ZIO[Environment[Types] & R, E, A]
-    ): ZIO[R, E, A] = {
-      effect.provideSomeLayer[R](
-        controllerLayers[Types].asInstanceOf[ZLayer[R, Nothing, Environment[Types]]]
-      )
-    }
-  }
-
-  final class RegisterServicesPartiallyApplied[Types <: Tuple] {
-    inline def apply[R, E, A](
-      effect: ZIO[Environment[Types] & R, E, A]
-    ): ZIO[R, E, A] = {
-      effect.provideSomeLayer[R](
-        serviceLayers[Types].asInstanceOf[ZLayer[R, Nothing, Environment[Types]]]
-      )
-    }
+  /** Provides `layer` to an effect needing `Env` besides some `R`; the result also fails with the layer's error. */
+  final class RegisterPartiallyApplied[Env: EnvironmentTag, LayerError](layer: ZLayer[Any, LayerError, Env]) {
+    def apply[R, E, A](effect: ZIO[Env & R, E, A]): ZIO[R, E | LayerError, A] =
+      effect.provideSomeLayer[R](layer)
   }
 
   type Environment[Types <: Tuple] = Types match {
@@ -122,9 +108,11 @@ object Okapi {
   transparent inline def serviceLayers[Types <: Tuple] =
     macros.ZioAnnotationProcessor.controllerLayers[Types]
 
-  /** Derives every controller in `Types` and, transitively, their constructor dependencies. Dependencies that cannot be
-    * derived (traits, abstract classes, library types such as `String` or `zio.http.Client`) become the input of the
-    * returned layer, e.g. `ZLayer[Repo, Nothing, ...]`.
+  /** Derives every controller in `Types` and, transitively, their constructor dependencies: every concrete class
+    * outside the packages `scala.`, `java.`, `javax.`, `zio.`, `sttp.`, other libraries' classes included. A dependency
+    * with a `ZLayer.Derive.Default` (e.g. a `zio.Config`-backed type, `Hub`, `Queue`) is built from that default.
+    * Traits, abstract classes, types in those packages (e.g. `String`, `zio.http.Client`) and the defaults' own
+    * environments become the input of the returned layer, e.g. `ZLayer[Repo, Nothing, ...]`.
     */
   transparent inline def autoLayer[Types <: Tuple]: Any =
     macros.ZioAnnotationProcessor.autoLayer[Types]
@@ -137,11 +125,13 @@ object Okapi {
   ): Routes[Any, Response] =
     ZioHttpInterpreter().toHttp(OkapiDocs.swagger[Task](endpoints, title, version, customise))
 
-  /** Provides [[controllerLayers]] of `Types` to an effect: `registerOkapiControllers[(A, B)](program)`. */
-  inline def registerOkapiControllers[Types <: Tuple] =
-    new RegisterControllersPartiallyApplied[Types]
+  /** Provides [[controllerLayers]] of `Types` to an effect: `registerOkapiControllers[(A, B)](program)` is a
+    * `ZIO[R, E | LayerError, A]`, `LayerError` being the layers' error type.
+    */
+  transparent inline def registerOkapiControllers[Types <: Tuple] =
+    macros.ZioAnnotationProcessor.register[Types]
 
-  /** Provides [[serviceLayers]] of `Types` to an effect. */
-  inline def registerOkapiServices[Types <: Tuple] =
-    new RegisterServicesPartiallyApplied[Types]
+  /** Provides [[serviceLayers]] of `Types` to an effect, as [[registerOkapiControllers]]. */
+  transparent inline def registerOkapiServices[Types <: Tuple] =
+    macros.ZioAnnotationProcessor.register[Types]
 }

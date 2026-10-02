@@ -9,12 +9,10 @@ libraryDependencies ++= Seq(
   "dev.zio" %% "zio-logging" % V.zioLogging,
   "dev.zio" %% "zio-logging-slf4j" % V.zioLogging,
   "dev.zio" %% "zio-json" % V.zioJson,
-  "com.softwaremill.sttp.tapir" %% "tapir-json-zio" % V.tapir, // default JSON codec, see ZioJsonDefault
   "com.softwaremill.sttp.tapir" %% "tapir-zio" % V.tapir,
   "com.softwaremill.sttp.tapir" %% "tapir-zio-http-server" % V.tapir,
 )
 
 compilerSettings
-zioJsonScheme
 zioTestSettings
 publishSettings

@@ -7,6 +7,7 @@ import sttp.apispec.{ ExtensionValue, SecurityScheme }
 import sttp.apispec.openapi.{ Components, OpenAPI, Operation, PathItem }
 import sttp.apispec.openapi.circe.*
 import sttp.apispec.openapi.circe.yaml.*
+import sttp.model.Method
 import sttp.tapir.{ AnyEndpoint, EndpointInput, EndpointIO, EndpointOutput, EndpointTransput }
 import sttp.tapir.docs.openapi.OpenAPIDocsInterpreter
 import sttp.tapir.server.ServerEndpoint
@@ -16,7 +17,8 @@ import sttp.tapir.swagger.bundle.SwaggerInterpreter
   * generated document, e.g. [[OkapiDocs.withBearerAuth]].
   *
   * An endpoint's name is its operation id; a name shared by several endpoints is prefixed with the endpoint's first tag
-  * (`list` in `Books` → `booksList`), before `customise` runs. Unnamed endpoints get Tapir's path-based id.
+  * (`list` in `Books` → `booksList`), and an id still shared after that gets `2`, `3`, ... appended in document order,
+  * before `customise` runs. Unnamed endpoints get Tapir's path-based id.
   *
   * An operation with a streamed request or response body carries Tapir codegen's `x-tapir-codegen-directives`
   * (`force-req-body-streaming`, `force-resp-body-streaming`).
@@ -70,8 +72,11 @@ object OkapiDocs {
         Option.when(hasStream(e.input))("force-req-body-streaming"),
         Option.when(hasStream(e.output))("force-resp-body-streaming"),
       ).flatten
-      e.method.filter(_ => streamed.nonEmpty).map { method =>
-        (method.method.toLowerCase, e.showPathTemplate(showQueryParam = None)) -> streamed
+      Option.when(streamed.nonEmpty) {
+        val method = e.method.getOrElse(Method.GET).method.toLowerCase
+        val path =
+          e.showPathTemplate(showQueryParam = None, includeAuth = false, showNoPathAs = "/", showPathsAs = None)
+        (method, path) -> streamed
       }
     }.toMap
     api =>
@@ -95,23 +100,41 @@ object OkapiDocs {
     case _ => false
   }
 
-  /** Prefixes each operation id shared by several operations with the operation's first tag. */
+  /** Prefixes each operation id shared by several operations with the operation's first tag, then appends `2`, `3`, ...
+    * to every later use of an id still shared.
+    */
   private val uniqueOperationIds: Customise = { api =>
-    val shared = operations(api)
-      .flatMap(_.operationId)
+    val ops = operations(api)
+    val shared = ops
+      .flatMap(_._3.operationId)
       .groupBy(identity)
       .collect {
         case (id, uses) if uses.size > 1 => id
       }
       .toSet
-    mapOperations(api) { (_, _, operation) =>
-      val tag = operation.tags.headOption.fold(List.empty[String])(Word.findAllIn(_).toList)
-      (operation.operationId, tag) match {
-        case (Some(id), first :: rest) if shared.contains(id) =>
-          val prefix = first.head.toLower.toString + first.tail + rest.map(_.capitalize).mkString
-          operation.copy(operationId = Some(prefix + id.capitalize))
-        case _ => operation
+    val prefixed = ops.map { (path, method, operation) =>
+      (path, method) -> operation.operationId.map(id => if shared.contains(id) then tagPrefixed(id, operation) else id)
+    }
+    val taken = prefixed.flatMap(_._2).toSet
+    val unique = prefixed
+      .foldLeft((Set.empty[String], Map.empty[(String, String), String])) {
+        case ((used, ids), (key, Some(id))) =>
+          val chosen = {
+            if !used.contains(id) then id
+            else Iterator.from(2).map(n => s"$id$n").filterNot(c => taken.contains(c) || used.contains(c)).next()
+          }
+          (used + chosen, ids + (key -> chosen))
+        case (state, (_, None)) => state
       }
+      ._2
+    mapOperations(api)((path, method, operation) => operation.copy(operationId = unique.get((path, method))))
+  }
+
+  /** `id` prefixed with `operation`'s first tag in camel case; `id` if that tag has no letters or digits. */
+  private def tagPrefixed(id: String, operation: Operation): String = {
+    operation.tags.headOption.fold(List.empty[String])(Word.findAllIn(_).toList) match {
+      case first :: rest => first.head.toLower.toString + first.tail + rest.map(_.capitalize).mkString + id.capitalize
+      case Nil => id
     }
   }
 
@@ -133,9 +156,19 @@ object OkapiDocs {
     api.copy(paths = api.paths.copy(pathItems = api.paths.pathItems.map((path, i) => path -> item(path, i))))
   }
 
-  private def operations(api: OpenAPI): List[Operation] = {
-    api.paths.pathItems.values.toList.flatMap { item =>
-      List(item.get, item.put, item.post, item.delete, item.options, item.head, item.patch, item.trace).flatten
+  /** Every operation of `api` with its path and lower-case method, in document order. */
+  private def operations(api: OpenAPI): List[(String, String, Operation)] = {
+    api.paths.pathItems.toList.flatMap { (path, item) =>
+      List(
+        "get" -> item.get,
+        "put" -> item.put,
+        "post" -> item.post,
+        "delete" -> item.delete,
+        "options" -> item.options,
+        "head" -> item.head,
+        "patch" -> item.patch,
+        "trace" -> item.trace,
+      ).collect { case (method, Some(operation)) => (path, method, operation) }
     }
   }
 }

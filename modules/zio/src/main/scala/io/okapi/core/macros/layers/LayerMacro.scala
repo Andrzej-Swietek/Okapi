@@ -15,7 +15,8 @@ private[okapi] final class LayerMacro(val q: Quotes) extends TypeLists {
   /** @param derived
     *   types to build with `ZLayer.derive`, dependencies before dependants.
     * @param external
-    *   dependencies that cannot be derived (traits, abstract classes, library types); they become the layer's input.
+    *   dependencies left to the caller (traits, abstract classes, library types, environments of
+    *   `ZLayer.Derive.Default` instances); they become the layer's input.
     */
   final case class Resolution(derived: List[TypeRepr], external: List[TypeRepr])
 
@@ -29,21 +30,35 @@ private[okapi] final class LayerMacro(val q: Quotes) extends TypeLists {
     def resolve(roots: List[TypeRepr]): Resolution = Resolution(roots, Nil)
   }
 
-  /** Walks primary constructors transitively. Whatever cannot be derived — abstract types and library types — is left
-    * to the caller as an input of the resulting layer.
+  /** Walks primary constructors transitively. A dependency with a `ZLayer.Derive.Default` is built from it by
+    * `ZLayer.derive` and only the default's environment is left to the caller; whatever else cannot be derived —
+    * abstract types and library types — is left to the caller as an input of the resulting layer.
     */
   object ConstructorGraph extends DependencyResolution {
 
     def resolve(roots: List[TypeRepr]): Resolution = {
-      val visited = roots.foldLeft(Resolution(Nil, Nil))(visit)
+      val visited = roots.foldLeft(Resolution(Nil, Nil))((state, root) => withDependencies(state, root.dealias))
       visited.copy(derived = visited.derived.reverse, external = visited.external.reverse)
     }
 
     private def visit(state: Resolution, tpe: TypeRepr): Resolution = {
       val dep = tpe.dealias
-      val sym = dep.typeSymbol
-      if (state.derived ++ state.external).exists(_ =:= dep) then state
-      else if !isDerivable(sym) then state.copy(external = dep :: state.external)
+      if known(state, dep) then state
+      else {
+        defaultContext(dep) match {
+          case Some((environment, _)) =>
+            state.copy(external = conjuncts(environment).filterNot(known(state, _)).reverse ++ state.external)
+          case None if !isDerivable(dep.typeSymbol) => state.copy(external = dep :: state.external)
+          case None => withDependencies(state, dep)
+        }
+      }
+    }
+
+    private def known(state: Resolution, tpe: TypeRepr): Boolean =
+      (state.derived ++ state.external).exists(_ =:= tpe)
+
+    private def withDependencies(state: Resolution, dep: TypeRepr): Resolution = {
+      if known(state, dep) then state
       else {
         // marks `dep` before its dependencies, then moves it after them: dependencies first, cycles terminate
         val afterDeps = constructorDependencies(dep).foldLeft(state.copy(derived = dep :: state.derived))(visit)
@@ -54,7 +69,9 @@ private[okapi] final class LayerMacro(val q: Quotes) extends TypeLists {
     private def constructorDependencies(tpe: TypeRepr): List[TypeRepr] =
       constructorClauses(tpe).collect { case (params, false) => params }.flatten
 
-    /** A concrete class outside the library namespaces `scala.`, `java.`, `javax.`, `zio.`, `sttp.`. */
+    /** A concrete class outside the packages `scala.`, `java.`, `javax.`, `zio.`, `sttp.`, other libraries' classes
+      * included.
+      */
     private def isDerivable(sym: Symbol): Boolean = {
       sym.isClassDef &&
       !sym.flags.is(Flags.Trait) &&
@@ -103,12 +120,17 @@ private[okapi] final class LayerMacro(val q: Quotes) extends TypeLists {
     }
   }
 
-  private def defaultError(param: TypeRepr): Option[TypeRepr] = {
+  private def defaultError(param: TypeRepr): Option[TypeRepr] =
+    defaultContext(param).map(_._2)
+
+  /** `(R, E)` of the `ZLayer.Derive.Default` instance `ZLayer.derive` resolves for a parameter of type `param`. */
+  private def defaultContext(param: TypeRepr): Option[(TypeRepr, TypeRepr)] = {
     param.asType match {
       case '[p] =>
         Expr.summon[ZLayer.Derive.Default.WithContext[?, ?, p]].map { default =>
           val tpe = default.asTerm.tpe.dealias
-          tpe.select(tpe.typeSymbol.typeMember("E")).dealias
+          def member(name: String) = tpe.select(tpe.typeSymbol.typeMember(name)).dealias
+          (member("R"), member("E"))
         }
     }
   }
