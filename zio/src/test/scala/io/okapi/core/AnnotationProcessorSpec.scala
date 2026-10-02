@@ -27,8 +27,6 @@ import sttp.tapir.server.ziohttp.ZioHttpInterpreter
 
 object AnnotationProcessorSpec extends ZIOSpecDefault {
 
-  // ─── Shared DTOs ──────────────────────────────────────────────────────────
-
   final case class HelloResponse(message: String) derives JsonCodec
   final case class EchoRequest(text: String) derives JsonCodec
   final case class EchoResponse(id: Int, text: String) derives JsonCodec
@@ -37,8 +35,6 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
   final class GreetingService {
     def greet(name: String): String = s"service:$name"
   }
-
-  // ─── Original controllers ─────────────────────────────────────────────────
 
   @Controller("/api/test")
   @Tag("TestController")
@@ -79,8 +75,6 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
       HelloResponse(greetingService.greet(name.getOrElse("World")))
   }
 
-  // ─── Nested path controllers ───────────────────────────────────────────────
-
   @Controller("/api/nested")
   @Tag("NestedController")
   final class NestedController {
@@ -116,8 +110,6 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
       ZIO.succeed(HelloResponse(s"v=$version id=$id text=${body.text}"))
   }
 
-  // ─── Content-type controllers ──────────────────────────────────────────────
-
   @Controller("/api/content")
   @Tag("ContentController")
   final class ContentController {
@@ -138,8 +130,6 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
       "raw string"
   }
 
-  // ─── Services for autoLayer tests ────────────────────────────────────────
-
   final class LoggingService {
     def format(msg: String): String = s"[LOG] $msg"
   }
@@ -155,8 +145,6 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
   final class UserRepository(db: DatabaseService) {
     def find(id: Int): String = db.query(s"id=$id")
   }
-
-  // ─── Controllers for autoLayer tests ─────────────────────────────────────
 
   @Controller("/api/auto-single")
   @Tag("AutoSingleController")
@@ -189,8 +177,6 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
     @Get("/user/{id}")
     def getUser(@Path("id") id: Int): HelloResponse = HelloResponse(users.find(id))
   }
-
-  // ─── Controllers for feature tests ─────────────────────────────────────────
 
   @Controller("/api/map")
   @ApiTag("MapApi")
@@ -320,8 +306,6 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
       stream => stream
   }
 
-  // ─── Test helpers ──────────────────────────────────────────────────────────
-
   private val testRoutes = ZioHttpInterpreter().toHttp(Okapi.endpoints[TestController])
   private val nestedRoutes = ZioHttpInterpreter().toHttp(Okapi.endpoints[NestedController])
   private val contentRoutes = ZioHttpInterpreter().toHttp(Okapi.endpoints[ContentController])
@@ -357,8 +341,6 @@ object AnnotationProcessorSpec extends ZIOSpecDefault {
       remoteAddress = None,
     )
   }
-
-  // ─── Specs ────────────────────────────────────────────────────────────────
 
   override def spec: Spec[TestEnvironment & Scope, Any] = {
     suite("AnnotationProcessorSpec")(

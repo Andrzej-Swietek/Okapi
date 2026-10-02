@@ -2,21 +2,23 @@ ThisBuild / organization := "io.okapi.example"
 ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "3.6.4"
 
-val okapiVersion = "0.1.1"
-val zioVersion = "2.1.16"
-val zioHttpVersion = "3.2.0"
-val zioJsonVersion = "0.7.43"
-val tapirVersion = "1.11.29"
-val zioLoggingVersion = "2.5.0"
-val zioConfigVersion = "4.0.0"
+val okapiVersion = "0.2.0-SNAPSHOT"
+val zioVersion = "2.1.26"
+val zioHttpVersion = "3.11.6"
+val zioJsonVersion = "1.0.0"
+val tapirVersion = "1.13.32"
+val zioLoggingVersion = "2.5.3"
+val zioConfigVersion = "4.0.8"
 
 lazy val example = (project in file("."))
   .settings(
     name := "okapi-example",
+    // zio-http needs zio-json 1.x while tapir-json-zio is built against 0.10 (see okapi's OkapiBuild.zioJsonScheme)
+    libraryDependencySchemes += "dev.zio" %% "zio-json" % VersionScheme.Always,
     Compile / mainClass := Some("io.okapi.exampleApp.Main"),
     Compile / discoveredMainClasses := Seq("io.okapi.exampleApp.Main"),
     libraryDependencies ++= Seq(
-      "io.okapi" %% "core" % okapiVersion,
+      "io.github.andrzej-swietek" %% "okapi-zio" % okapiVersion,
       "dev.zio" %% "zio" % zioVersion,
       "dev.zio" %% "zio-http" % zioHttpVersion,
       "dev.zio" %% "zio-json" % zioJsonVersion,

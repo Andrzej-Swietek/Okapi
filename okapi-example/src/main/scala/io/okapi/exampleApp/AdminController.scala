@@ -3,16 +3,19 @@ package io.okapi.exampleApp
 import zio.IO
 import io.okapi.core.annotations.*
 import io.okapi.core.http.ApiError
+import java.lang.System as JSystem
 
 @Controller("/api/admin")
 @Tag("Admin")
 final class AdminController(bookService: BookService) {
 
+  private val startedAt = JSystem.currentTimeMillis()
+
   @Get("/health")
   @Summary("Health check")
   @Produces("text/plain")
   def health: String =
-    s"OK uptime=${java.lang.System.currentTimeMillis()}ms"
+    s"OK uptime=${JSystem.currentTimeMillis() - startedAt}ms"
 
   @Get("/stats")
   @Summary("Get book statistics (JSON)")

@@ -31,8 +31,11 @@ final class Consumes(val mediaType: String = "application/json") extends StaticA
 final class Description(val text: String) extends StaticAnnotation
 final class Summary(val text: String) extends StaticAnnotation
 
-final class WebSocket(val path: String = "") extends StaticAnnotation
+/** A WebSocket endpoint. The server pings the client every `pingIntervalSeconds` (0 disables pinging). */
+final class WebSocket(val path: String = "", val pingIntervalSeconds: Int = 13) extends StaticAnnotation
 final class Deprecated() extends StaticAnnotation
 
-/** Overrides the success HTTP status code (default: 201 for POST, 204 for `Unit`, otherwise 200). */
+/** Overrides the success HTTP status code. Default: 204 for a `Unit` result, otherwise 201 for POST and 200 for the
+  * other verbs.
+  */
 final class Status(val code: Int) extends StaticAnnotation

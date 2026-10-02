@@ -1,6 +1,5 @@
 package io.okapi.exampleApp
 
-import sttp.tapir.generic.auto.*
 import zio.*
 import zio.http.{ Response as ZioHttpResponse, Routes, Server }
 

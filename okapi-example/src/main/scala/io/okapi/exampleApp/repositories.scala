@@ -3,7 +3,7 @@ package io.okapi.exampleApp
 import scala.collection.mutable
 
 final class BookRepository {
-  private val store   = mutable.HashMap.empty[Int, Book]
+  private val store = mutable.HashMap.empty[Int, Book]
   private var counter = 1
 
   def findAll(genre: Option[String] = None, limit: Int = 50): List[Book] =
@@ -18,12 +18,14 @@ final class BookRepository {
     book
   }
 
-  def update(id: Int, req: CreateBookRequest): Option[Book] =
+  def update(id: Int, req: CreateBookRequest): Option[Book] = {
     if store.contains(id) then {
       val book = Book(id, req.title, req.author, req.genre, req.year)
       store(id) = book
       Some(book)
-    } else None
+    }
+    else None
+  }
 
   def delete(id: Int): Boolean = store.remove(id).isDefined
 
@@ -33,7 +35,7 @@ final class BookRepository {
 }
 
 final class UserRepository {
-  private val store   = mutable.HashMap.empty[Int, User]
+  private val store = mutable.HashMap.empty[Int, User]
   private var counter = 1
 
   def findAll: List[User] = store.values.toList

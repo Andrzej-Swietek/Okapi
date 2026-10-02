@@ -1,73 +1,19 @@
-import xerial.sbt.Sonatype.sonatypeCentralHost
+import OkapiBuild.*
 
-ThisBuild / scalaVersion := "3.6.4"
+name := "okapi-core"
+description := "Okapi core: effect-agnostic, annotation-driven Tapir endpoints powered by Scala 3 macros."
 
-val zioVersion = "2.1.16"
-val zioHttpVersion = "3.2.0"
-val zioJsonVersion = "0.7.43"
-val tapirVersion = "1.11.29"
-val zioLoggingVersion = "2.5.0"
+// JSON: jsoniter-scala by default; any Tapir JSON integration in scope takes precedence (see "JSON" in OKAPI.md)
+libraryDependencies ++= Seq(
+  "com.softwaremill.sttp.tapir" %% "tapir-core" % V.tapir,
+  "com.softwaremill.sttp.tapir" %% "tapir-jsoniter-scala" % V.tapir,
+  // `derives JsoniterCodec` expands JsonCodecMaker in user code, so the macros are a regular dependency
+  "com.github.plokhotnyuk.jsoniter-scala" %% "jsoniter-scala-macros" % V.jsoniter,
+  // tests also exercise swapping in another integration
+  "com.softwaremill.sttp.tapir" %% "tapir-json-zio" % V.tapir % Test,
+)
 
-lazy val core = (project in file("."))
-  .settings(
-    name := "okapi-core",
-    description := "Okapi: annotation-driven HTTP API library for ZIO HTTP and Tapir, powered by Scala 3 macros.",
-    libraryDependencies ++= Seq(
-      "dev.zio" %% "zio" % zioVersion,
-      "dev.zio" %% "zio-http" % zioHttpVersion,
-      "dev.zio" %% "zio-json" % zioJsonVersion,
-      "dev.zio" %% "zio-logging" % zioLoggingVersion,
-      "dev.zio" %% "zio-logging-slf4j" % zioLoggingVersion,
-      "com.softwaremill.sttp.tapir" %% "tapir-core" % tapirVersion,
-      "com.softwaremill.sttp.tapir" %% "tapir-zio" % tapirVersion,
-      "com.softwaremill.sttp.tapir" %% "tapir-zio-http-server" % tapirVersion,
-      "com.softwaremill.sttp.tapir" %% "tapir-json-zio" % tapirVersion,
-      "com.softwaremill.sttp.tapir" %% "tapir-swagger-ui-bundle" % tapirVersion,
-      "dev.zio" %% "zio-test" % zioVersion % Test,
-      "dev.zio" %% "zio-test-sbt" % zioVersion % Test,
-      "dev.zio" %% "zio-test-junit" % zioVersion % Test,
-      "dev.zio" %% "zio-test-magnolia" % zioVersion % Test,
-    ),
-    testFrameworks := Seq(new TestFramework("zio.test.sbt.ZTestFramework")),
-    scalacOptions ++= Seq(
-      "-Xmax-inlines:128",
-      "-Yexplicit-nulls",
-      "-Yno-flexible-types",
-      "-Wsafe-init",
-      "-Wunused:all",
-      "-Wnonunit-statement",
-      "-explain",
-      "-explain-types",
-      "-no-indent",
-    ),
-    Compile / doc / sources := Seq.empty,
-    externalResolvers ++= Seq(
-      Resolver.defaultLocal
-    ),
-    // ---- Maven Central (Sonatype Central Portal) publishing ----
-    publishTo := sonatypePublishToBundle.value,
-    publishMavenStyle := true,
-    sonatypeCredentialHost := sonatypeCentralHost,
-    sonatypeProfileName := "io.github.andrzej-swietek",
-    licenses := Seq(
-      "Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0.txt")
-    ),
-    homepage := Some(url("https://github.com/Andrzej-Swietek/Okapi")),
-    scmInfo := Some(
-      ScmInfo(
-        url("https://github.com/Andrzej-Swietek/Okapi"),
-        "scm:git:https://github.com/Andrzej-Swietek/Okapi.git",
-        "scm:git:git@github.com:Andrzej-Swietek/Okapi.git",
-      )
-    ),
-    developers := List(
-      Developer(
-        id = "Andrzej-Swietek",
-        name = "Andrzej Świętek",
-        email = "aswietek@avsystem.com",
-        url = url("https://github.com/Andrzej-Swietek"),
-      )
-    ),
-  )
-
-addCommandAlias("fmt", "all scalafmtSbt scalafmtAll")
+compilerSettings
+zioJsonScheme
+zioTestSettings
+publishSettings

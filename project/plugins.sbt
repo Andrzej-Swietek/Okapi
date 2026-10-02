@@ -1,5 +1,5 @@
-addSbtPlugin("com.github.sbt" % "sbt-native-packager" % "1.11.1")
-addSbtPlugin("org.scalameta" % "sbt-scalafmt" % "2.5.0")
+addSbtPlugin("com.github.sbt" % "sbt-native-packager" % "1.12.0")
+addSbtPlugin("org.scalameta" % "sbt-scalafmt" % "2.6.2")
 addSbtPlugin("org.jetbrains.scala" % "sbt-ide-settings" % "1.1.2")
 addSbtPlugin("org.xerial.sbt" % "sbt-sonatype" % "3.12.2")
-addSbtPlugin("com.github.sbt" % "sbt-pgp" % "2.3.1")
+addSbtPlugin("com.github.sbt" % "sbt-pgp" % "2.3.2")

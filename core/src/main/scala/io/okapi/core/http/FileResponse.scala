@@ -1,8 +1,8 @@
 package io.okapi.core
 package http
 
-/** Wraps a binary response with a download filename. Okapi maps this to `byteArrayBody` +
-  * `Content-Disposition: attachment; filename="..."`.
+/** A download: `data` is the body (with the `@Produces` media type, `application/octet-stream` by default) and the
+  * response gets `Content-Disposition: attachment; filename="..."`, with quotes and CR/LF removed from `filename`.
   */
 final case class FileResponse(
   data: Array[Byte],
