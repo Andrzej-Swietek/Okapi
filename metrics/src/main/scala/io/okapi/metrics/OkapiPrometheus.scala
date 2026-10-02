@@ -1,4 +1,4 @@
-package io.okapi.prometheus
+package io.okapi.metrics
 
 import io.prometheus.metrics.model.registry.PrometheusRegistry
 import sttp.tapir.server.metrics.MetricLabels

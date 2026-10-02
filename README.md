@@ -27,7 +27,7 @@ scalacOptions += "-Xmax-inlines:128"
 | `okapi-zio` | ZIO HTTP routes, `ZStream` / SSE / WebSocket bodies, `ZLayer` wiring (brings `okapi-core`, `okapi-openapi`) |
 | `okapi-core` | effect-agnostic annotations, macros and runtime — no ZIO dependency |
 | `okapi-openapi` | OpenAPI JSON/YAML and Swagger UI, any effect |
-| `okapi-prometheus` | Prometheus metrics for endpoints, any effect |
+| `okapi-metrics` | endpoint metrics (per-request callback, Prometheus), any effect |
 
 Requires **Scala 3.6+**. Published for Scala 3 on Maven Central — no extra resolvers, no authentication.
 
@@ -118,7 +118,7 @@ val endpoints: List[ServerEndpoint[Any, IO]] = OkapiEndpoints[IO].of(BookControl
 - `ApiError` → HTTP status mapping; any other failure → a logged `500` without the exception message
 - per-call status, headers and `Content-Type` (`ApiResponse`), `FileResponse` downloads
 - `ZStream` bodies, server-sent events, WebSocket pipes with text, binary or JSON frames
-- Tapir server options on the generated routes (CORS, …) and Prometheus metrics per route
+- Tapir server options on the generated routes (CORS, …), zio-http middleware, and metrics per route template
 - `Okapi.autoLayer[Controllers]` — compile-time `ZLayer` wiring of the whole dependency tree
 - Swagger UI + `Okapi.openApiYaml` / `Okapi.openApiJson`, with extra endpoints and document customisation
 

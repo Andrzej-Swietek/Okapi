@@ -12,11 +12,11 @@ lazy val okapiOpenapi = project.in(file("openapi"))
 /** ZIO specialisation: ZIO HTTP, ZStream / WebSocket, ZLayer. */
 lazy val okapiZio = project.in(file("zio")).dependsOn(core, okapiOpenapi)
 
-/** Prometheus metrics for any effect; ZIO HTTP only in its tests. */
-lazy val okapiPrometheus = project.in(file("prometheus")).dependsOn(okapiZio % "test->compile")
+/** Endpoint metrics for any effect (callback, Prometheus); ZIO HTTP only in its tests. */
+lazy val okapiMetrics = project.in(file("metrics")).dependsOn(okapiZio % "test->compile")
 
 lazy val root = (project in file("."))
-  .aggregate(core, okapiOpenapi, okapiZio, okapiPrometheus)
+  .aggregate(core, okapiOpenapi, okapiZio, okapiMetrics)
   .settings(
     publish / skip := true
   )

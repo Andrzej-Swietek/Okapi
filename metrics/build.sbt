@@ -1,7 +1,7 @@
 import OkapiBuild.*
 
-name := "okapi-prometheus"
-description := "Prometheus metrics for Okapi endpoints, for any effect: request counts, durations and active requests."
+name := "okapi-metrics"
+description := "Metrics for Okapi endpoints, for any effect: a per-request callback and Prometheus metrics."
 
 libraryDependencies ++= Seq(
   "com.softwaremill.sttp.tapir" %% "tapir-prometheus-metrics" % V.tapir

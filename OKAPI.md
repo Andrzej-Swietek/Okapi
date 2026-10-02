@@ -28,7 +28,7 @@ scalacOptions += "-Xmax-inlines:128"   // required for macro expansion depth
 |--------|----------|----------------|
 | `okapi-core` | annotations, macros, runtime, `JsoniterCodec`, `ApiResponse` | no |
 | `okapi-openapi` | OpenAPI JSON/YAML documents and Swagger UI endpoints | no |
-| `okapi-prometheus` | Prometheus metrics for endpoints | no |
+| `okapi-metrics` | endpoint metrics: a per-request callback and Prometheus | no |
 | `okapi-zio` | ZIO HTTP routes, `ZStream` / SSE / WebSocket bodies, `ZLayer` wiring (brings `okapi-core` and `okapi-openapi`) | yes |
 
 Requires Scala 3.6+.
@@ -323,9 +323,9 @@ the generated routes — CORS, metrics, logging, custom error handling:
 ```scala
 import sttp.tapir.server.interceptor.cors.CORSInterceptor
 import sttp.tapir.server.ziohttp.{ ZioHttpInterpreter, ZioHttpServerOptions }
-import io.okapi.prometheus.OkapiPrometheus
+import io.okapi.metrics.OkapiPrometheus
 
-val metrics = OkapiPrometheus[Task]()           // okapi-prometheus, any effect
+val metrics = OkapiPrometheus[Task]()           // okapi-metrics, any effect
 val options = ZioHttpServerOptions
   .customiseInterceptors[Any]
   .corsInterceptor(CORSInterceptor.default[Task])
@@ -346,6 +346,19 @@ val app = Okapi.routes[Controllers](options) ++ ZioHttpInterpreter().toHttp(metr
 `path` is the route template (`/api/books/{id}`), `controller` the controller's tag (`@Tag` / `@ApiTag`, else its
 class name), `status` the status class (`2xx`, ...). Pass `namespace` / `registry` to change the prefix or the
 `PrometheusRegistry`.
+
+For another metrics system, `OkapiMetrics.interceptor[F](record)` calls `record` once per request with a
+`RequestRecord(method, path, controller, status, duration)` — `path` again the route template:
+
+```scala
+val options = ZioHttpServerOptions
+  .customiseInterceptors[Any]
+  .metricsInterceptor(OkapiMetrics.interceptor[Task](r => myMetrics.recordRequest(r.method, r.path, r.status, r.duration)))
+  .options
+```
+
+zio-http middleware (`HandlerAspect`) applies to the generated routes as to any others —
+`Okapi.routes[Controllers] @@ myMiddleware` — and its environment joins the routes' type.
 
 ---
 
@@ -502,7 +515,10 @@ object Main extends ZIOAppDefault {
 
 ### Missing features
 
-- **`multipart/form-data` with auto-derived codec** — `Expr.summon[MultipartCodec[T]]` at macro expansion time fails when the codec is provided only via `sttp.tapir.generic.auto.*` wildcard import and the case class is defined in another file. Workaround: define `given MultipartCodec[T]` explicitly in the companion object of the form class.
+- **`multipart/form-data` with `-Yexplicit-nulls`** — Tapir's derived `MultipartCodec` (from `sttp.tapir.generic.auto.*`)
+  expands in the file generating the endpoints and does not compile there under `-Yexplicit-nulls`. Add
+  `import scala.language.unsafeNulls` to that file. A form is a case class of fields, with `sttp.model.Part[Array[Byte]]`
+  for a file (`part.fileName`, `part.body`).
 
 - **Several documented responses (`oneOf`)** — `ApiResponse` picks the status per call, but the OpenAPI document
   shows one body type per endpoint; use a sealed hierarchy to describe different shapes.
