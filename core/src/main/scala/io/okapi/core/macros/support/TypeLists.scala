@@ -1,7 +1,6 @@
 package io.okapi.core.macros.support
 
-/** Type-level lists for macros working on several types: tuples of controller types and intersections of environments.
-  */
+/** Type-level lists for macros working on several types: tuple members and intersection conjuncts. */
 private[okapi] trait TypeLists extends MacroContext {
   import q.reflect.*
 

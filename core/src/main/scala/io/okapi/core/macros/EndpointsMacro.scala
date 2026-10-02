@@ -6,8 +6,8 @@ import io.okapi.core.macros.model.{ EndpointDocs, OkapiAnnotation, RoutePath }
 import scala.quoted.*
 import sttp.tapir.server.ServerEndpoint
 
-/** Expansion of `endpoints[C, F, G, R](host)`: one endpoint per controller method carrying a routing annotation of one
-  * of the [[generators]], ordered most specific path first, then by path.
+/** Expansion of [[AnnotationProcessor.endpoints]]: one endpoint per controller method carrying a routing annotation of
+  * one of the [[generators]], ordered most specific path first, then by path.
   */
 private[okapi] class EndpointsMacro(val q: Quotes) extends RestEndpoints {
   import q.reflect.*
@@ -47,6 +47,7 @@ private[okapi] class EndpointsMacro(val q: Quotes) extends RestEndpoints {
         path = path,
         specificity = path.specificityKey(appended),
         docs = EndpointDocs(
+          name = method.name,
           tag = tag,
           summary = method.annotationArg(OkapiAnnotation.Summary),
           description = method.annotationArg(OkapiAnnotation.Description),
@@ -65,10 +66,9 @@ private[okapi] class EndpointsMacro(val q: Quotes) extends RestEndpoints {
   /** The routing annotation of `method` (nearest in its lineage) and the generator owning it. */
   private def routing(method: Symbol): Option[(EndpointGenerator, OkapiAnnotation, Term)] = {
     method.nearest { m =>
-      m.okapiAnnotations
-        .collectFirst(Function.unlift { (kind, term) =>
-          generators.find(_.annotations.contains(kind)).map(generator => (generator, kind, term))
-        })
+      m.okapiAnnotations.collectFirst(Function.unlift { (kind, term) =>
+        generators.find(_.annotations.contains(kind)).map(generator => (generator, kind, term))
+      })
     }
   }
 }

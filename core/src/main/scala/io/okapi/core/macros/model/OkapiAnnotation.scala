@@ -1,6 +1,6 @@
 package io.okapi.core.macros.model
 
-/** Every annotation the macros read (see `io.okapi.core.annotations`).
+/** Every annotation the macros read (see [[io.okapi.core.annotations]]).
   *
   * Annotations are matched on the class's simple name, so e.g. `@java.lang.Deprecated` counts as `@Deprecated`.
   */

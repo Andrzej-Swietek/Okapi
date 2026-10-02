@@ -19,8 +19,7 @@ import sttp.tapir.generic.Configuration
   * enum Color derives JsoniterCodec { case Red, Green } // {"type": "Red"}
   * }}}
   * Sealed hierarchies and enums carry their case name in the [[JsoniterCodec.Discriminator]] field, in the codec and in
-  * the schema alike, so the OpenAPI docs describe exactly what is sent. It is a `JsonValueCodec`, so it works wherever
-  * one is expected; Okapi picks up both its codec and its schema.
+  * the schema alike. Okapi bodies use both its codec and its schema.
   */
 trait JsoniterCodec[A] extends JsonValueCodec[A] {
   def schema: Schema[A]
@@ -31,12 +30,12 @@ object JsoniterCodec {
   /** The field naming the case of a sealed hierarchy or enum. */
   final val Discriminator = "type"
 
-  /** Called by `derives JsoniterCodec`. `inline`, so the derivation macros expand for the concrete `A`. */
+  /** Called by `derives JsoniterCodec`. */
   inline def derived[A]: JsoniterCodec[A] =
     from(JsonCodecMaker.make[A](CodecMakerConfig.withDiscriminatorFieldName(Some(Discriminator))), schemaOf[A])
 
   /** The schema matching [[derived]]'s JSON: generic derivation (nested types included) with [[Discriminator]]. An
-    * explicit `given Schema` for a nested type still takes precedence.
+    * explicit `given Schema` for a nested type takes precedence.
     */
   @nowarn("msg=unused import") // used where the body is inlined: nested types' schemas derive from it
   inline def schemaOf[A]: Schema[A] = {

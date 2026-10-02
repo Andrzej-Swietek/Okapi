@@ -40,7 +40,10 @@ private[okapi] trait RestEndpoints extends EndpointGeneration {
     private def apiResponseOutput[B: Type](route: Route, spec: MethodSpec): Term = {
       val body = TypeRepr.of[B]
       if body =:= TypeRepr.of[FileResponse] then {
-        abort(s"'${spec.symbol.name}': return ApiResponse[Array[Byte]] with a Content-Disposition header instead")
+        abort(
+          s"'${spec.symbol.name}': ApiResponse[FileResponse] is not supported; " +
+            "return ApiResponse[Array[Byte]] with a Content-Disposition header"
+        )
       }
       val status = Literal(IntConstant(successStatus(route, body)))
       val bodyOutput = responseBodyOutput(body, spec.produces).asTerm
@@ -53,7 +56,6 @@ private[okapi] trait RestEndpoints extends EndpointGeneration {
       }
     }
 
-    /** Explicit `@Status(code)` wins; otherwise 204 for a `Unit` body, 201 for POST, 200 for everything else. */
     private def successStatus(route: Route, body: TypeRepr): Int = {
       route.method.intAnnotationArg(OkapiAnnotation.Status).getOrElse {
         if body =:= TypeRepr.of[Unit] then 204

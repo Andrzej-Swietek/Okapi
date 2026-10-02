@@ -51,9 +51,12 @@ private[okapi] trait CodecSupport extends TypeShapes {
   private def plainJsoniterSchema[T: Type]: Expr[Schema[T]] =
     Expr.summon[Schema[T]].getOrElse('{ JsoniterCodec.schemaOf[T] })
 
-  /** The schema of `T` as a JSON element: from its jsoniter codec, as a container, or a primitive's. */
+  /** The schema of `E` as a JSON element: from its jsoniter codec, as a container, or a primitive's. */
   private def elementSchema[E: Type](role: String): Option[Expr[Schema[E]]] = {
-    jsoniter[E](role).map(_._2).orElse(Option.when(isPrimitive(TypeRepr.of[E]))(summonOrAbort[Schema[E]]("")))
+    def primitive = summonOrAbort[Schema[E]](
+      s"Missing given sttp.tapir.Schema[${Type.show[E]}] for the $role; provide one or use a JSON type with a codec"
+    )
+    jsoniter[E](role).map(_._2).orElse(Option.when(isPrimitive(TypeRepr.of[E]))(primitive))
   }
 
   private def containerSchema[T: Type](role: String): Option[Expr[Schema[T]]] = {
@@ -94,7 +97,7 @@ private[okapi] trait CodecSupport extends TypeShapes {
   def fallbackJsonCodec[T: Type]: Option[Expr[Codec[String, T, CodecFormat.Json]]] = None
 
   def schema[T: Type]: Expr[Schema[T]] =
-    summonOrDeriveSchema[T].getOrElse(abort(s"Missing sttp.tapir.Schema[${TypeRepr.of[T].show}]"))
+    summonOrDeriveSchema[T].getOrElse(abort(s"Missing given sttp.tapir.Schema[${TypeRepr.of[T].show}]"))
 
   /** `Expr.summon` that aborts on ambiguous instances. */
   private def summonUnambiguous[C: Type](role: String): Option[Expr[C]] = {

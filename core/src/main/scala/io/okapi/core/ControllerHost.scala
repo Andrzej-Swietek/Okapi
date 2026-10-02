@@ -3,14 +3,13 @@ package io.okapi.core
 import io.okapi.core.http.ApiError
 import sttp.monad.MonadError
 
-/** How generated server logic reaches controller `C` and runs its `F` effects inside the server effect `G`: with a
-  * fixed instance ([[ControllerHost.instance]], `G = F`), or by resolving the controller per request.
-  */
+/** Runs calls on controller `C`, whose methods return `F`, inside the server effect `G`. */
 trait ControllerHost[C, F[_], G[_]] {
   def effect: OkapiEffect[F]
 
   def monad: MonadError[G]
 
+  /** Runs `call` on the controller, surfacing an [[ApiError]] it raises as a `Left`. */
   def run[A](call: C => F[A]): G[Either[ApiError, A]]
 }
 

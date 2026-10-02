@@ -36,7 +36,7 @@ private[okapi] trait OutputCodecs extends CodecSupport {
           case Some("application/x-www-form-urlencoded") =>
             val codec = summonOrAbort[Codec[String, t, CodecFormat.XWwwFormUrlencoded]](
               s"Missing Codec[String, ${tpe.show}, CodecFormat.XWwwFormUrlencoded] for " +
-                "@Produces(\"application/x-www-form-urlencoded\")"
+                "@Produces(\"application/x-www-form-urlencoded\"). Import sttp.tapir.generic.auto.*"
             )
             '{ OkapiRuntime.formBodyOutput[t]($codec) }
           case Some(other) =>

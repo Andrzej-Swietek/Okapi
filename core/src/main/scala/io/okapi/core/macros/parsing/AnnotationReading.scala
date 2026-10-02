@@ -6,8 +6,8 @@ import io.okapi.core.macros.support.MacroContext
 /** Reads Okapi annotations (matched by simple name) and their constant arguments off symbols.
   *
   * Annotations are inherited, nearest first: a method from the methods it overrides, a parameter from the parameter at
-  * the same position in those methods, a class from its base classes — so an annotated API trait can be implemented by
-  * an unannotated class.
+  * the same position in those methods, a class from its base classes. An annotated API trait can therefore be
+  * implemented by an unannotated class.
   */
 private[okapi] trait AnnotationReading extends MacroContext {
   import q.reflect.*
@@ -60,8 +60,7 @@ private[okapi] trait AnnotationReading extends MacroContext {
     literalArg(annotation, param, "an Int") { case IntConstant(v) => v }
 
   /** Accepts `@A(lit)`, `@A(name = lit)`, a constant (`final val P = "/x"`, `@A(P)`) and `@A()` / `@A` (default
-    * argument → `None`). Anything else — e.g. a non-final `val` — is a compile error at the argument, since the macro
-    * can only read values known at compile time.
+    * argument → `None`). Anything else, e.g. a non-final `val`, is a compile error at the argument.
     */
   private def literalArg[A](annotation: Term, param: String, expected: String)(read: PartialFunction[Constant, A])
     : Option[A] =

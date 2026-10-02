@@ -95,7 +95,7 @@ object CoreFeaturesSpec extends ZIOSpecDefault {
     def stats: String = "stats"
   }
 
-  /** An annotated API trait implemented by an unannotated class — the usual tagless-final layout. */
+  /** An annotated API trait implemented by an unannotated class. */
   trait LibraryRoutes[F[_]] {
     @Get("/shelf/{n}")
     def shelf(@Path("n") n: Int): F[String]

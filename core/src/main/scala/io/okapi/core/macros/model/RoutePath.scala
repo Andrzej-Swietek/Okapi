@@ -1,7 +1,7 @@
 package io.okapi.core.macros.model
 
-/** A route's URL template, e.g. `/books/{id}/reviews`: normalised (single separators, leading separator) and only
-  * obtainable through [[RoutePath.join]].
+/** A route's URL template, e.g. `/books/{id}/reviews`: normalised to single separators and only obtainable through
+  * [[RoutePath.join]].
   */
 opaque private[okapi] type RoutePath = String
 

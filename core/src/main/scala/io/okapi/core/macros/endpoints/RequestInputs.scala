@@ -24,7 +24,7 @@ private[okapi] trait RequestInputs extends EndpointDsl with InputCodecs {
   private val MaxTupleArity = 22
 
   /** Walks the URL template (fixed segments and `{captures}` in URL order), then every remaining parameter — `@Path`
-    * ones absent from the template and all non-path ones — in DECLARATION order.
+    * ones absent from the template and all non-path ones — in declaration order.
     */
   def requestInputs(path: RoutePath, spec: MethodSpec): List[RequestInput] = {
     val indexed = spec.params.zipWithIndex
@@ -62,7 +62,8 @@ private[okapi] trait RequestInputs extends EndpointDsl with InputCodecs {
           case _ => groups :+ Vector(input)
         }
       }
-      if groups.size > MaxTupleArity then abort(s"More than ${MaxTupleArity * MaxTupleArity} request inputs")
+      if groups.size > MaxTupleArity then
+        abort(s"More than ${MaxTupleArity * MaxTupleArity} request inputs; declare fewer parameters")
       InputLayout(groups.map(_.toList).toList)
     }
   }

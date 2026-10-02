@@ -120,7 +120,8 @@ private[okapi] trait MethodParsing extends AnnotationReading {
       case many =>
         error(
           param,
-          s"Parameter ${param.name} has conflicting annotations: ${many.map(_.annotation.show).mkString(", ")}",
+          s"Parameter ${param.name} has conflicting annotations: ${many.map(_.annotation.show).mkString(", ")}; " +
+            "keep one",
         )
         many.head
     }
@@ -161,7 +162,7 @@ private[okapi] trait MethodParsing extends AnnotationReading {
   }
 
   /** `F[A]` → `(true, A)`, any other `A` → `(false, A)`. A result built from `F`'s type constructor that does not
-    * conform to `F[A]` (e.g. a ZIO with an unsupported error type) is rejected.
+    * conform to `F[A]` (e.g. with another error type) is a compile error.
     */
   private def unwrapEffect(method: Symbol, tpe: TypeRepr, effect: TypeRepr): (Boolean, TypeRepr) = {
     tpe.dealias.simplified match {
@@ -175,7 +176,7 @@ private[okapi] trait MethodParsing extends AnnotationReading {
     }
   }
 
-  /** The class behind `F`: `ZIO` for `[x] =>> ZIO[R, E, x]`, `IO` for `IO`. */
+  /** The class behind `F`: `M` for `[x] =>> M[R, E, x]` and for `M`. */
   private def effectHead(effect: TypeRepr): Symbol = {
     effect.dealias match {
       case TypeLambda(_, _, body) => body.dealias.typeSymbol

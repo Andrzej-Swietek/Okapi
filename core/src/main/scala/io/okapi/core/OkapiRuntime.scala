@@ -10,7 +10,7 @@ import sttp.model.{ Header, MediaType, StatusCode }
 import sttp.tapir.*
 import sttp.tapir.server.ServerEndpoint
 
-/** Runtime helpers the generated endpoint code calls into. Effect-agnostic. */
+/** Runtime helpers the generated endpoint code calls into. */
 object OkapiRuntime {
 
   def addInput[SECURITY_INPUT, INPUT, ERROR_OUTPUT, OUTPUT, R, J, IJ](
@@ -66,13 +66,13 @@ object OkapiRuntime {
     )
   }
 
-  /** The values of up to 22 request inputs, carried as a single input value. */
+  /** The values of several request inputs, carried as a single input value. */
   final class InputGroup(val values: Any)
 
   def grouped[V](input: EndpointInput[V]): EndpointInput[InputGroup] =
     input.map(InputGroup(_))(_.values.asInstanceOf[V])
 
-  /** The error status, documented with every status an [[ApiError]] case maps to. */
+  /** The error status, documented with the status of every [[ApiError]] case except [[ApiError.Other]]. */
   val apiErrorStatus: EndpointOutput.StatusCode[StatusCode] = {
     List(
       StatusCode.BadRequest -> "Bad request",
@@ -119,7 +119,7 @@ object OkapiRuntime {
     )
   }
 
-  /** Codec format for a media type given as a string; the macros validate it at compile time. */
+  /** Codec format for a media type; the `String` overload throws on an unparsable media type. */
   final case class MediaFormat(mediaType: MediaType) extends CodecFormat
 
   object MediaFormat {
@@ -134,7 +134,7 @@ object OkapiRuntime {
 
   type ErrorOut = (sttp.model.StatusCode, ApiErrorResponse)
 
-  /** Runs a controller call through its host and maps an `ApiError` to the shared error output. */
+  /** Runs a controller call through its host and maps an [[ApiError]] to [[ErrorOut]]. */
   def serve[C, F[_], G[_], A](host: ControllerHost[C, F, G], call: C => F[A]): G[Either[ErrorOut, A]] =
     host.monad.map(host.run(call))(_.left.map(toErrorOut))
 
@@ -151,7 +151,7 @@ object OkapiRuntime {
   private def toErrorOut(error: ApiError): ErrorOut = (error.status, ApiError.toResponse(error))
 
   private def fileParts(file: FileResponse): (Array[Byte], String) = {
-    // strip quotes and CR/LF so a user-supplied filename cannot break out of the header value
+    // quotes and CR/LF in a user-supplied filename would break out of the header value
     val safeName = file.filename.replaceAll("[\"\\r\\n]", "").nn
     (file.data, s"""attachment; filename="$safeName"""")
   }

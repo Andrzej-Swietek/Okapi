@@ -6,7 +6,7 @@ import io.okapi.core.macros.model.{ EndpointDocs, OkapiAnnotation, RoutePath }
 /** Template Method for turning one routed controller method into a `ServerEndpoint[R, G]`.
   *
   * The skeleton (request inputs → outputs → error output → docs → server logic) is fixed in
-  * [[EndpointGenerator.generate]]; concrete generators only fill in the steps that differ.
+  * [[EndpointGenerator.describe]] and [[EndpointGenerator.generate]]; concrete generators fill in the abstract steps.
   */
 private[okapi] trait EndpointGeneration extends RequestInputs with OutputCodecs with ServerLogic {
   import q.reflect.*

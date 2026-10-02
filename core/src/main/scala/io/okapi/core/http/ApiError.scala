@@ -6,6 +6,7 @@ import com.github.plokhotnyuk.jsoniter_scala.macros.JsonCodecMaker
 import sttp.model.StatusCode
 import sttp.tapir.{ Codec, CodecFormat, Schema }
 
+/** An error a controller method fails with: the response gets [[status]] and an [[ApiError.ApiErrorResponse]] body. */
 sealed trait ApiError {
   def status: StatusCode
   def message: String
@@ -40,7 +41,7 @@ object ApiError {
     val status: StatusCode = StatusCode.ServiceUnavailable
   }
   final case class Other(status: StatusCode, message: String) extends ApiError {
-    require(status.isClientError || status.isServerError, s"Status code $status is not an error code")
+    require(status.isClientError || status.isServerError, s"ApiError.Other needs a 4xx or 5xx status, got $status")
   }
 
   /** The JSON error body: `{"code": 404, "message": "..."}`. */
@@ -78,5 +79,7 @@ object ApiError {
     ApiErrorResponse(e.status.code, e.message)
 }
 
-/** Carries an [[ApiError]] through effects whose error channel is `Throwable` (see `OkapiEffect.fromMonadError`). */
+/** Carries an [[ApiError]] through effects whose error channel is `Throwable` (see
+  * [[io.okapi.core.OkapiEffect.fromMonadError]]).
+  */
 final case class ApiErrorException(error: ApiError) extends RuntimeException(error.message)

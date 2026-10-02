@@ -8,7 +8,8 @@ import scala.quoted.*
 
 /** Builds the server-logic lambda: Tapir input tuple → controller method call → server effect with mapped errors.
   *
-  * Generated shape: `input => OkapiRuntime.serve[C, F, G, A](host, controller => controller.method(args...))`.
+  * Generated shape: `input => OkapiRuntime.serve[C, F, G, A](host, controller => controller.method(args...))`, with
+  * [[OkapiRuntime.serveFile]] for a [[FileResponse]] result.
   */
 private[okapi] trait ServerLogic extends RequestInputs {
   import q.reflect.*

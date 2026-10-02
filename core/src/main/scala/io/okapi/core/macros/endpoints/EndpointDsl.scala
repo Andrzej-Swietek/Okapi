@@ -21,7 +21,8 @@ private[okapi] trait EndpointDsl extends TypeShapes {
     def withErrorOutput(output: Term): Term = append(endpoint, output, TransputSlot.ErrorOutput)
 
     def withDocs(docs: EndpointDocs): Term = {
-      val tagged = invoke(endpoint, "tag", Expr(docs.tag).asTerm)
+      val named = invoke(endpoint, "name", Expr(docs.name).asTerm)
+      val tagged = invoke(named, "tag", Expr(docs.tag).asTerm)
       val summarised = docs.summary.fold(tagged)(s => invoke(tagged, "summary", Expr(s).asTerm))
       val described = docs.description.fold(summarised)(d => invoke(summarised, "description", Expr(d).asTerm))
       if docs.deprecated then invokeNullary(described, "deprecated") else described
@@ -43,7 +44,7 @@ private[okapi] trait EndpointDsl extends TypeShapes {
     Apply(callRuntime(runtimeMethod, typeArgs, List(left, right)), List(summonParamConcat(leftValue, rightValue)))
   }
 
-  /** Emits `OkapiRuntime.add{Input,Output,ErrorOutput}` with the `ParamConcat` evidence for the chosen accumulator. */
+  /** Emits the [[TransputSlot.runtimeMethod]] call of `slot`, with the `ParamConcat` evidence for its accumulator. */
   private def append(endpoint: Term, transput: Term, slot: TransputSlot): Term = {
     val types = endpointTypes(endpoint)
     val current = slot match {
@@ -78,8 +79,7 @@ private[okapi] trait EndpointDsl extends TypeShapes {
   }
 
   private def invokeNullary(endpoint: Term, methodName: String): Term = {
-    val method = endpointMethods(endpoint, methodName)
-      .headOption
+    val method = endpointMethods(endpoint, methodName).headOption
       .getOrElse(abort(s"Cannot resolve zero-arg method '$methodName' on ${endpoint.tpe.show}"))
     Apply(Select(endpoint, method), Nil)
   }

@@ -27,7 +27,7 @@ private[okapi] trait MacroContext {
   def cast(term: Term, tpe: TypeRepr): Term =
     TypeApply(Select.unique(term, "asInstanceOf"), List(Inferred(tpe)))
 
-  /** The bare type constructor of an applied type, e.g. `ZIO` out of `ZIO[Any, Any, Any]`. */
+  /** The bare type constructor of an applied type, e.g. `Either` out of `Either[Any, Any]`. */
   def typeConstructor(applied: TypeRepr): TypeRepr = {
     applied match {
       case AppliedType(tc, _) => tc

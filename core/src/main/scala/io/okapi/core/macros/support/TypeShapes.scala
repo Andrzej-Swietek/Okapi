@@ -56,7 +56,6 @@ private[okapi] trait TypeShapes extends MacroContext {
     }
   }
 
-  /** Inverse of [[tupleOf]]. */
   /** Flattens one level, as Tapir's `ParamConcat` does: `(A, B)` and `A *: B *: EmptyTuple` → `List(A, B)`, `Unit` →
     * `Nil`, anything else → itself.
     */
@@ -83,8 +82,7 @@ private[okapi] trait TypeShapes extends MacroContext {
   }
 
   private def isTupleClass(sym: Symbol): Boolean = {
-    sym
-      .fullName
+    sym.fullName
       .startsWith("scala.Tuple") && sym.fullName.drop("scala.Tuple".length).toIntOption.exists(n => n >= 1 && n <= 22)
   }
 
