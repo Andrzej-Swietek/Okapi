@@ -4,8 +4,8 @@ package http
 import sttp.model.{ Header, HeaderNames, MediaType, StatusCode }
 
 /** A success result whose status and headers are chosen per call. A method returning `ApiResponse[A]` (or `F` of it)
-  * documents `A` as its body; `status = None` sends the endpoint's success status (see
-  * [[io.okapi.core.annotations.Status]]).
+  * documents `A` as its body and the endpoint's success status (see [[io.okapi.core.annotations.Status]]) as its
+  * status; `status = None` sends that status.
   */
 final case class ApiResponse[+A](body: A, status: Option[StatusCode] = None, headers: List[Header] = Nil) {
 

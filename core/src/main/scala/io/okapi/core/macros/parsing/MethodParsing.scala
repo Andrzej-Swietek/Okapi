@@ -8,12 +8,17 @@ private[okapi] trait MethodParsing extends AnnotationReading {
 
   /** @param default
     *   the method's default-argument getter for this parameter: the parameter is then optional in the request, and the
-    *   getter is called on the controller when it is absent — the same value a Scala call would use.
+    *   getter is called on the controller when it is absent (or empty, for [[Param.decodesAbsence]]) — the same value a
+    *   Scala call would use.
     */
   final case class Param(name: String, tpe: TypeRepr, kind: ParamKind, default: Option[Symbol]) {
 
-    /** The type Tapir decodes: `Option[T]` for a parameter with a default. */
-    def inputType: TypeRepr = if default.isDefined then TypeRepr.of[Option].appliedTo(tpe) else tpe
+    /** An `Option` or a collection: absent from the request, it decodes as empty. */
+    def decodesAbsence: Boolean = tpe <:< TypeRepr.of[Option[Any]] || tpe <:< TypeRepr.of[Iterable[Any]]
+
+    /** The type Tapir decodes: `Option[T]` for a parameter with a default, unless [[decodesAbsence]]. */
+    def inputType: TypeRepr =
+      if default.isDefined && !decodesAbsence then TypeRepr.of[Option].appliedTo(tpe) else tpe
   }
 
   /** One term parameter clause of the method. An explicit clause lists where each argument comes from; an implicit /

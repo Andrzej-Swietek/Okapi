@@ -1,5 +1,6 @@
 package io.okapi.core.macros.endpoints
 
+import io.okapi.core.OkapiRuntime
 import io.okapi.core.http.{ ApiResponse, FileResponse }
 import io.okapi.core.macros.model.{ HttpVerb, OkapiAnnotation }
 import scala.quoted.*
@@ -45,9 +46,10 @@ private[okapi] trait RestEndpoints extends EndpointGeneration {
             "return ApiResponse[Array[Byte]] with a Content-Disposition header"
         )
       }
-      val status = Literal(IntConstant(successStatus(route, body)))
+      val code = Expr(successStatus(route, body))
+      val status = code.asTerm
       val bodyOutput = responseBodyOutput(body, spec.produces).asTerm
-      val statusAndHeaders = '{ sttp.tapir.statusCode.and(sttp.tapir.headers) }.asTerm
+      val statusAndHeaders = '{ OkapiRuntime.apiResponseStatus($code).and(sttp.tapir.headers) }.asTerm
       val combined = statusAndHeaders.andOutput(bodyOutput)
       tupleElements(transputValueType(bodyOutput.tpe)).size match {
         case 0 => callRuntime("apiResponseUnitOutput", Nil, List(combined, status))

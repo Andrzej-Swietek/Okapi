@@ -4,11 +4,25 @@ import zio.test.*
 
 import com.github.plokhotnyuk.jsoniter_scala.core.JsonValueCodec
 import com.github.plokhotnyuk.jsoniter_scala.macros.{ CodecMakerConfig, JsonCodecMaker }
-import io.okapi.core.annotations.{ Controller, Get, Path, Post, Produces, Query, RequestBody, Status }
+import io.okapi.core.annotations.{
+  Consumes,
+  Controller,
+  Delete,
+  Get,
+  Header,
+  Path,
+  Post,
+  Produces,
+  Query,
+  RequestBody,
+  Status,
+}
+import io.okapi.core.http.{ ApiResponse, FileResponse }
 import io.okapi.core.json.JsoniterCodec
 import scala.util.{ Success, Try }
+import sttp.model.StatusCode
 import sttp.monad.TryMonad
-import sttp.tapir.{ EndpointInput, EndpointIO, EndpointOutput, EndpointTransput }
+import sttp.tapir.{ DecodeResult, EndpointInput, EndpointIO, EndpointOutput, EndpointTransput }
 import sttp.tapir.generic.auto.*
 import sttp.tapir.server.ServerEndpoint
 
@@ -41,6 +55,8 @@ object CoreFeaturesSpec extends ZIOSpecDefault {
 
   final case class Drawing(shapes: List[Shape], color: Color) derives JsoniterCodec
 
+  final case class Page(offset: Int = 0, size: Int) derives JsoniterCodec
+
   object Consts {
     final val Base = "/const"
     final val Accepted = 202
@@ -70,6 +86,39 @@ object CoreFeaturesSpec extends ZIOSpecDefault {
     @Get("/drawing")
     def drawing: Drawing = Drawing(List(Square(2)), Color.Red)
 
+    @Get("/paged")
+    def paged: Page = Page(0, 10)
+
+    @Get("/count")
+    def count: F[Int] = F.pure(3)
+
+    @Get("/tag-names")
+    def tagNames: List[String] = List("a", "b")
+
+    @Post("/sum")
+    def sum(@RequestBody numbers: List[Int]): Int = numbers.sum
+
+    @Get("/problem")
+    @Produces("application/problem+json")
+    def problem: Author = Author("Herbert", 1920)
+
+    @Post("/charset")
+    @Consumes("application/json; charset=utf-8")
+    def charset(@RequestBody author: Author): String = author.name
+
+    @Post("/created")
+    def created: ApiResponse[String] = ApiResponse("made")
+
+    @Delete("/gone")
+    def gone: ApiResponse[Unit] = ApiResponse(())
+
+    @Get("/accepted")
+    @Status(Consts.Accepted)
+    def accepted: ApiResponse[String] = ApiResponse("later")
+
+    @Get("/download")
+    def download(@Query("name") name: String): FileResponse = FileResponse(Array[Byte](1), name)
+
     @Get("/raw-json")
     @Produces("application/json")
     def rawJson: String = """{"already":"json"}"""
@@ -84,6 +133,14 @@ object CoreFeaturesSpec extends ZIOSpecDefault {
 
     @Get("/page")
     def page(@Query("offset") offset: Int, @Query("limit") limit: Int = 20): String = s"$offset+$limit"
+
+    @Get("/filter")
+    def filter(
+      @Query("from") from: Option[Int] = None,
+      @Query("size") size: Option[Int] = Some(10),
+      @Query("tag") tags: List[String] = Nil,
+      @Header("X-Sort") sort: List[String] = List("id"),
+    ): String = s"$from/$size/${tags.mkString(",")}/${sort.mkString(",")}"
 
     @Post("/pair/{id}")
     def pair(@Path("id") id: Int, @RequestBody pair: (Int, String)): String = s"$id:${pair._1}:${pair._2}"
@@ -122,19 +179,28 @@ object CoreFeaturesSpec extends ZIOSpecDefault {
   private def run(se: ServerEndpoint[Any, Try], input: Any): Try[Either[Any, Any]] =
     se.logic(TryMonad)(().asInstanceOf[se.PRINCIPAL])(input.asInstanceOf[se.INPUT])
 
-  private def body(transput: EndpointTransput[?]): EndpointIO.Body[?, ?] = bodies(transput).head
+  private def body(transput: EndpointTransput[?]): EndpointIO.Body[?, ?] =
+    atoms(transput).collect { case b: EndpointIO.Body[?, ?] => b }.head
 
-  private def bodies(transput: EndpointTransput[?]): List[EndpointIO.Body[?, ?]] = {
+  private def atoms(transput: EndpointTransput[?]): List[EndpointTransput[?]] = {
     transput match {
-      case b: EndpointIO.Body[?, ?] => List(b)
-      case EndpointOutput.Pair(left, right, _, _) => bodies(left) ++ bodies(right)
-      case EndpointInput.Pair(left, right, _, _) => bodies(left) ++ bodies(right)
-      case EndpointIO.Pair(left, right, _, _) => bodies(left) ++ bodies(right)
-      case EndpointOutput.MappedPair(pair, _) => bodies(pair)
-      case EndpointInput.MappedPair(pair, _) => bodies(pair)
-      case EndpointIO.MappedPair(pair, _) => bodies(pair)
-      case _ => Nil
+      case EndpointOutput.Pair(left, right, _, _) => atoms(left) ++ atoms(right)
+      case EndpointInput.Pair(left, right, _, _) => atoms(left) ++ atoms(right)
+      case EndpointIO.Pair(left, right, _, _) => atoms(left) ++ atoms(right)
+      case EndpointOutput.MappedPair(pair, _) => atoms(pair)
+      case EndpointInput.MappedPair(pair, _) => atoms(pair)
+      case EndpointIO.MappedPair(pair, _) => atoms(pair)
+      case other => List(other)
     }
+  }
+
+  /** The status codes documented on the endpoint's per-call status output. */
+  private def documentedStatuses(se: ServerEndpoint[Any, Try]): Set[StatusCode] = {
+    atoms(se.endpoint.output)
+      .collect { case s: EndpointOutput.StatusCode[?] => s.documentedCodes.keySet }
+      .flatten
+      .collect { case Left(code) => code }
+      .toSet
   }
 
   private def encode(se: ServerEndpoint[Any, Try], value: Any): Any =
@@ -187,6 +253,17 @@ object CoreFeaturesSpec extends ZIOSpecDefault {
             ) == """[{"type":"Circle","radius":1.0},{"type":"Dot"}]"""
           )
         },
+        test("a field equal to its default value is written, as the schema requires it") {
+          assertTrue(encode(find(core, "/core/paged"), Page(0, 10)) == """{"offset":0,"size":10}""")
+        },
+        test("primitives and containers of primitives get a codec made on the spot") {
+          val sum = body(find(core, "/core/sum").endpoint.input).codec.asInstanceOf[sttp.tapir.Codec[String, Any, ?]]
+          assertTrue(
+            encode(find(core, "/core/count"), 3) == "3",
+            encode(find(core, "/core/tag-names"), List("a", "b")) == """["a","b"]""",
+            sum.decode("[1,2]") == DecodeResult.Value(List(1, 2)),
+          )
+        },
         test("an imported Tapir JSON integration replaces it") {
           assertTrue(encode(find(SwappedJson.endpoints, "/core/book"), Book(7)) == """{"pageCount":7}""")
         },
@@ -200,6 +277,21 @@ object CoreFeaturesSpec extends ZIOSpecDefault {
         test("an explicit application/json on a String keeps it as is, with a JSON content type") {
           val se = find(core, "/core/raw-json")
           assertTrue(mediaType(se) == "application/json", encode(se, """{"a":1}""") == """{"a":1}""")
+        },
+        test("a typed body with a +json media type is served with that media type") {
+          val se = find(core, "/core/problem")
+          assertTrue(
+            mediaType(se) == "application/problem+json",
+            encode(se, Author("H", 1)) == """{"name":"H","born":1}""",
+          )
+        },
+        test("a JSON media type with parameters is JSON") {
+          val codec = body(find(core, "/core/charset").endpoint.input).codec
+          assertTrue(
+            codec.format.mediaType.toString == "application/json; charset=utf-8",
+            codec.asInstanceOf[sttp.tapir.Codec[String, Any, ?]].decode("""{"name":"H","born":1}""") ==
+              DecodeResult.Value(Author("H", 1)),
+          )
         },
         test("a binary body is served with its declared media type") {
           assertTrue(mediaType(find(core, "/core/png")) == "image/png")
@@ -218,6 +310,13 @@ object CoreFeaturesSpec extends ZIOSpecDefault {
           val output = find(core, "/core/const").endpoint.output.show
           assertTrue(output.contains("202"))
         },
+        test("an ApiResponse documents the endpoint's success status") {
+          assertTrue(
+            documentedStatuses(find(core, "/core/created")) == Set(StatusCode.Created),
+            documentedStatuses(find(core, "/core/gone")) == Set(StatusCode.NoContent),
+            documentedStatuses(find(core, "/core/accepted")) == Set(StatusCode.Accepted),
+          )
+        },
         test("annotations are inherited from the API trait a controller implements") {
           val library = OkapiEndpoints[Try].of(Library())
           assertTrue(
@@ -234,9 +333,28 @@ object CoreFeaturesSpec extends ZIOSpecDefault {
             run(se, (10, Some(5))) == Success(Right("10+5")),
           )
         },
+        test("an Option or collection parameter with a default decodes as itself and falls back when empty") {
+          val se = find(core, "/core/filter")
+          assertTrue(
+            run(se, (None, None, Nil, Nil)) == Success(Right("None/Some(10)//id")),
+            run(se, (Some(1), Some(2), List("a", "b"), List("x"))) == Success(Right("Some(1)/Some(2)/a,b/x")),
+          )
+        },
         test("a tuple-typed body next to another input arrives flattened and is rebuilt") {
           assertTrue(run(find(core, "/core/pair/{id}"), (1, 2, "x")) == Success(Right("1:2:x")))
         },
+      ),
+      suite("downloads")(
+        test("the filename keeps printable ASCII without quotes and backslashes, and non-ASCII goes in filename*") {
+          val se = find(core, "/core/download")
+          def disposition(name: String): Any = run(se, name).map(_.map(_.asInstanceOf[(Array[Byte], String)]._2))
+          assertTrue(
+            disposition("report\\") == Success(Right("attachment; filename=\"report_\"")),
+            disposition(s"a${0.toChar}b.txt") == Success(Right("attachment; filename=\"a_b.txt\"")),
+            disposition("zażółć.pdf") ==
+              Success(Right("attachment; filename=\"za____.pdf\"; filename*=UTF-8''za%C5%BC%C3%B3%C5%82%C4%87.pdf")),
+          )
+        }
       ),
       suite("routing")(
         test("routes are ordered by their effective path, including appended @Path captures") {

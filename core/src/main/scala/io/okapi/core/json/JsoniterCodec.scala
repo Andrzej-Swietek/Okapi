@@ -30,9 +30,15 @@ object JsoniterCodec {
   /** The field naming the case of a sealed hierarchy or enum. */
   final val Discriminator = "type"
 
-  /** Called by `derives JsoniterCodec`. */
-  inline def derived[A]: JsoniterCodec[A] =
-    from(JsonCodecMaker.make[A](CodecMakerConfig.withDiscriminatorFieldName(Some(Discriminator))), schemaOf[A])
+  /** Called by `derives JsoniterCodec`. Fields equal to their default value are written. */
+  inline def derived[A]: JsoniterCodec[A] = {
+    from(
+      JsonCodecMaker.make[A](
+        CodecMakerConfig.withDiscriminatorFieldName(Some(Discriminator)).withTransientDefault(false)
+      ),
+      schemaOf[A],
+    )
+  }
 
   /** The schema matching [[derived]]'s JSON: generic derivation (nested types included) with [[Discriminator]]. An
     * explicit `given Schema` for a nested type takes precedence.

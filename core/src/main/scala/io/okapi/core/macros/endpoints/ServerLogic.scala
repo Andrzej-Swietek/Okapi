@@ -126,7 +126,8 @@ private[okapi] trait ServerLogic extends RequestInputs {
   }
 
   /** `controller.method(clause1)(clause2)...`, with explicit clauses filled from the request. An absent optional
-    * parameter gets the method's default value: `controller.method$default$N(<preceding clauses>)`.
+    * parameter (an empty one, for [[Param.decodesAbsence]]) gets the method's default value:
+    * `controller.method$default$N(<preceding clauses>)`.
     */
   private def invokeMethod(controller: Term, spec: MethodSpec, params: List[Term], body: Option[Term]): Term = {
     def argument(slot: ArgSlot, preceding: List[List[Term]]): Term = {
@@ -137,7 +138,9 @@ private[okapi] trait ServerLogic extends RequestInputs {
           val param = spec.params(index)
           param.default.fold(params(index)) { getter =>
             val default = preceding.foldLeft[Term](Select(controller, getter))(Apply(_, _))
-            Apply(TypeApply(Select.unique(params(index), "getOrElse"), List(Inferred(param.tpe))), List(default))
+            val value = params(index)
+            if param.decodesAbsence then If(Select.unique(value, "isEmpty"), default, value)
+            else Apply(TypeApply(Select.unique(value, "getOrElse"), List(Inferred(param.tpe))), List(default))
           }
       }
     }

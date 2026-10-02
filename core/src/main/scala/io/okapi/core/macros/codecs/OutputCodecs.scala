@@ -31,8 +31,7 @@ private[okapi] trait OutputCodecs extends CodecSupport {
       case '[t] =>
         mediaType.filterNot(isJson) match {
           case None =>
-            val codec = jsonCodec[t]("response body")
-            '{ OkapiRuntime.jsonBody[t]($codec) }
+            jsonBody[t]("response body", mediaType)
           case Some("application/x-www-form-urlencoded") =>
             val codec = summonOrAbort[Codec[String, t, CodecFormat.XWwwFormUrlencoded]](
               s"Missing Codec[String, ${tpe.show}, CodecFormat.XWwwFormUrlencoded] for " +

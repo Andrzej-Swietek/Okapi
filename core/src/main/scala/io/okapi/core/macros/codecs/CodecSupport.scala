@@ -38,33 +38,31 @@ private[okapi] trait CodecSupport extends TypeShapes {
   /** A jsoniter codec for `T` and the schema documenting its JSON, first found of:
     *   1. a `JsoniterCodec[T]` (`derives JsoniterCodec`): its codec and its own, matching schema;
     *   1. a plain `JsonValueCodec[T]`: a summoned schema, or one derived like `JsoniterCodec.schemaOf`;
-    *   1. a container — `Option`, `List`, `Seq`, `Vector`, `Set`, `Map[String, _]` — of such types or primitives: a
-    *      codec made by `JsonCodecMaker.make` (reusing the elements' codecs), a schema built from the elements'.
+    *   1. a primitive, or a container — `Option`, `List`, `Seq`, `Vector`, `Set`, `Map[String, _]` — of such types: a
+    *      codec made by `JsonCodecMaker.make` (reusing the elements' codecs), the primitive's schema or one built from
+    *      the elements'.
     */
   private def jsoniter[T: Type](role: String): Option[(Expr[JsonValueCodec[T]], Expr[Schema[T]])] = {
     summonUnambiguous[JsoniterCodec[T]](role)
       .map(codec => (codec, '{ $codec.schema }))
       .orElse(summonUnambiguous[JsonValueCodec[T]](role).map(codec => (codec, plainJsoniterSchema[T])))
-      .orElse(containerSchema[T](role).map(schema => ('{ JsonCodecMaker.make[T] }, schema)))
+      .orElse {
+        primitiveSchema[T](role).orElse(containerSchema[T](role)).map(schema => ('{ JsonCodecMaker.make[T] }, schema))
+      }
   }
 
   private def plainJsoniterSchema[T: Type]: Expr[Schema[T]] =
     Expr.summon[Schema[T]].getOrElse('{ JsoniterCodec.schemaOf[T] })
 
-  /** The schema of `E` as a JSON element: from its jsoniter codec, as a container, or a primitive's. */
-  private def elementSchema[E: Type](role: String): Option[Expr[Schema[E]]] = {
-    def primitive = summonOrAbort[Schema[E]](
-      s"Missing given sttp.tapir.Schema[${Type.show[E]}] for the $role; provide one or use a JSON type with a codec"
-    )
-    jsoniter[E](role).map(_._2).orElse(Option.when(isPrimitive(TypeRepr.of[E]))(primitive))
+  private def primitiveSchema[T: Type](role: String): Option[Expr[Schema[T]]] = {
+    Option.when(isPrimitive(TypeRepr.of[T])) {
+      summonOrAbort[Schema[T]](s"Missing given sttp.tapir.Schema[${Type.show[T]}] for the $role")
+    }
   }
 
   private def containerSchema[T: Type](role: String): Option[Expr[Schema[T]]] = {
-    def element[E: Type](build: Expr[Schema[E]] => Expr[Any]): Option[Expr[Schema[T]]] = {
-      // a container of primitives only has a codec of its own (or none): leave it to the other sources
-      if isPrimitive(TypeRepr.of[E]) then None
-      else elementSchema[E](role).map(build(_).asExprOf[Schema[T]])
-    }
+    def element[E: Type](build: Expr[Schema[E]] => Expr[Any]): Option[Expr[Schema[T]]] =
+      jsoniter[E](role).map(found => build(found._2).asExprOf[Schema[T]])
     Type.of[T] match {
       case '[Option[e]] => element[e](s => '{ Schema.schemaForOption[e](using $s) })
       case '[List[e]] => element[e](s => '{ Schema.schemaForIterable[e, List](using $s) })
@@ -116,6 +114,18 @@ private[okapi] trait CodecSupport extends TypeShapes {
   def bytesBody(mediaType: Option[String]): Expr[EndpointIO.Body[Array[Byte], Array[Byte]]] =
     mediaType.fold('{ sttp.tapir.byteArrayBody })(m => '{ OkapiRuntime.binaryBody(${ Expr(m) }) })
 
-  /** Whether a typed (non-`String`, non-binary) body with this media type is JSON. */
-  def isJson(mediaType: String): Boolean = mediaType == "application/json" || mediaType.endsWith("+json")
+  /** Whether a typed (non-`String`, non-binary) body with this media type is JSON: `application/json` or an
+    * `application` subtype ending in `+json`, in any case and with any parameters.
+    */
+  def isJson(mediaType: String): Boolean = {
+    sttp.model.MediaType.parse(mediaType).exists { m =>
+      m.mainType == "application" && (m.subType == "json" || m.subType.endsWith("+json"))
+    }
+  }
+
+  /** JSON body of `T`: `application/json` by default, otherwise exactly the declared media type. */
+  def jsonBody[T: Type](role: String, mediaType: Option[String]): Expr[EndpointIO.Body[String, T]] = {
+    val codec = jsonCodec[T](role)
+    mediaType.fold('{ OkapiRuntime.jsonBody[T]($codec) })(m => '{ OkapiRuntime.jsonBody[T]($codec, ${ Expr(m) }) })
+  }
 }

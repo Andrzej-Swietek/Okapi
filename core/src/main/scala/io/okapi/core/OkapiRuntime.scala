@@ -6,7 +6,7 @@ import com.github.plokhotnyuk.jsoniter_scala.core.JsonValueCodec
 import io.okapi.core.http.{ ApiResponse, FileResponse }
 import io.okapi.core.http.ApiError
 import io.okapi.core.http.ApiError.ApiErrorResponse
-import sttp.model.{ Header, MediaType, StatusCode }
+import sttp.model.{ Header, MediaType, StatusCode, StatusText }
 import sttp.tapir.*
 import sttp.tapir.server.ServerEndpoint
 
@@ -47,6 +47,12 @@ object OkapiRuntime {
   )(using sttp.tapir.typelevel.ParamConcat.Aux[A, B, AB]
   ): EndpointOutput[AB] =
     left.and(right)
+
+  /** A per-call status, documented as `defaultStatus`. */
+  def apiResponseStatus(defaultStatus: Int): EndpointOutput.StatusCode[StatusCode] = {
+    val code = StatusCode(defaultStatus)
+    sttp.tapir.statusCode.description(code, StatusText.default(code).getOrElse(""))
+  }
 
   /** A per-call status and headers before a body of type `A`; `defaultStatus` is sent when the status is not set. */
   def apiResponseOutput[A](
@@ -90,6 +96,10 @@ object OkapiRuntime {
   /** A JSON body from any Tapir JSON codec. */
   def jsonBody[T](codec: Codec[String, T, CodecFormat.Json]): EndpointIO.Body[String, T] =
     sttp.tapir.customCodecJsonBody[T](using codec)
+
+  /** A JSON body served / read with exactly the given media type (UTF-8). */
+  def jsonBody[T](codec: Codec[String, T, CodecFormat.Json], mediaType: String): EndpointIO.Body[String, T] =
+    sttp.tapir.stringBodyAnyFormat(codec.format(MediaFormat(mediaType)), StandardCharsets.UTF_8.nn)
 
   /** A Tapir JSON codec from a jsoniter-scala codec: Okapi's default JSON support. */
   def jsoniterCodec[T](codec: JsonValueCodec[T], schema: Schema[T]): Codec[String, T, CodecFormat.Json] =
@@ -150,9 +160,26 @@ object OkapiRuntime {
 
   private def toErrorOut(error: ApiError): ErrorOut = (error.status, ApiError.toResponse(error))
 
-  private def fileParts(file: FileResponse): (Array[Byte], String) = {
-    // quotes and CR/LF in a user-supplied filename would break out of the header value
-    val safeName = file.filename.replaceAll("[\"\\r\\n]", "").nn
-    (file.data, s"""attachment; filename="$safeName"""")
+  private def fileParts(file: FileResponse): (Array[Byte], String) =
+    (file.data, contentDisposition(file.filename))
+
+  private def contentDisposition(filename: String): String = {
+    val ascii = filename.iterator.map(c => if c >= ' ' && c <= '~' && c != '"' && c != '\\' then c else '_').mkString
+    val attachment = s"""attachment; filename="$ascii""""
+    if filename.forall(_.toInt < 0x80) then attachment
+    else s"$attachment; filename*=UTF-8''${percentEncode(filename)}"
+  }
+
+  /** RFC 8187 `value-chars`: UTF-8 bytes, each outside `attr-char` as `%XX`. */
+  private def percentEncode(value: String): String = {
+    value
+      .getBytes(StandardCharsets.UTF_8)
+      .nn
+      .map { byte =>
+        val c = (byte & 0xff).toChar
+        val attrChar = c.isLetterOrDigit && c <= '~' || "!#$&+-.^_`|~".contains(c)
+        if attrChar then c.toString else f"%%${byte & 0xff}%02X"
+      }
+      .mkString
   }
 }
