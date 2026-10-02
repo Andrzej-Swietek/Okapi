@@ -1,13 +1,16 @@
 package io.okapi.core
 
+import java.nio.charset.StandardCharsets
+
+import com.github.plokhotnyuk.jsoniter_scala.core.JsonValueCodec
+import io.okapi.core.http.{ ApiResponse, FileResponse }
 import io.okapi.core.http.ApiError
 import io.okapi.core.http.ApiError.ApiErrorResponse
-import io.okapi.core.http.FileResponse
+import sttp.model.{ Header, MediaType, StatusCode, StatusText }
 import sttp.tapir.*
-import sttp.tapir.ztapir.*
-import zio.*
-import zio.stream.ZStream
+import sttp.tapir.server.ServerEndpoint
 
+/** Runtime helpers the generated endpoint code calls into. */
 object OkapiRuntime {
 
   def addInput[SECURITY_INPUT, INPUT, ERROR_OUTPUT, OUTPUT, R, J, IJ](
@@ -31,100 +34,152 @@ object OkapiRuntime {
   ): Endpoint[SECURITY_INPUT, INPUT, EJ, OUTPUT, R] =
     endpoint.errorOut(errorOutput)
 
-  def mapApiErrorEffect[R, A](
-    effect: ZIO[R, ApiError, A],
-  ): ZIO[R, (sttp.model.StatusCode, ApiErrorResponse), A] =
-    effect.mapError(error => (error.status, ApiError.toResponse(error)))
+  def andInput[A, B, AB](
+    left: EndpointInput[A],
+    right: EndpointInput[B],
+  )(using sttp.tapir.typelevel.ParamConcat.Aux[A, B, AB]
+  ): EndpointInput[AB] =
+    left.and(right)
 
-  def serviceWithMappedZio[T: zio.Tag, A](
-    f: T => ZIO[Any, (sttp.model.StatusCode, ApiErrorResponse), A],
-  ): ZIO[T, (sttp.model.StatusCode, ApiErrorResponse), A] =
-    ZIO.serviceWithZIO[T](f)
+  def andOutput[A, B, AB](
+    left: EndpointOutput[A],
+    right: EndpointOutput[B],
+  )(using sttp.tapir.typelevel.ParamConcat.Aux[A, B, AB]
+  ): EndpointOutput[AB] =
+    left.and(right)
 
-  def jsonBodyInput[T](
-    codec: zio.json.JsonCodec[T],
-    schema: Schema[T],
-  ): EndpointIO.Body[String, T] = {
-    val encoder = zio.json.JsonEncoder.fromCodec(codec)
-    val decoder = zio.json.JsonDecoder.fromCodec(codec)
-    sttp.tapir.json.zio.jsonBody[T](using encoder, decoder, schema)
+  /** A per-call status, documented as `defaultStatus`. */
+  def apiResponseStatus(defaultStatus: Int): EndpointOutput.StatusCode[StatusCode] = {
+    val code = StatusCode(defaultStatus)
+    sttp.tapir.statusCode.description(code, StatusText.default(code).getOrElse(""))
   }
 
-  def jsonBodyOutput[T](
-    codec: zio.json.JsonCodec[T],
-    schema: Schema[T],
-  ): EndpointOutput[T] = {
-    val encoder = zio.json.JsonEncoder.fromCodec(codec)
-    val decoder = zio.json.JsonDecoder.fromCodec(codec)
-    sttp.tapir.json.zio.jsonBody[T](using encoder, decoder, schema)
+  /** A per-call status and headers before a body of type `A`; `defaultStatus` is sent when the status is not set. */
+  def apiResponseOutput[A](
+    output: EndpointOutput[(StatusCode, List[Header], A)],
+    defaultStatus: Int,
+  ): EndpointOutput[ApiResponse[A]] = {
+    output.map((status, headers, body) => ApiResponse(body, Some(status), headers))(response =>
+      (response.status.getOrElse(StatusCode(defaultStatus)), response.headers, response.body)
+    )
   }
+
+  /** [[apiResponseOutput]] for an empty body. */
+  def apiResponseUnitOutput(output: EndpointOutput[(StatusCode, List[Header])], defaultStatus: Int)
+    : EndpointOutput[ApiResponse[Unit]] = {
+    output.map((status, headers) => ApiResponse((), Some(status), headers))(response =>
+      (response.status.getOrElse(StatusCode(defaultStatus)), response.headers)
+    )
+  }
+
+  /** The values of several request inputs, carried as a single input value. */
+  final class InputGroup(val values: Any)
+
+  def grouped[V](input: EndpointInput[V]): EndpointInput[InputGroup] =
+    input.map(InputGroup(_))(_.values.asInstanceOf[V])
+
+  /** The error status, documented with the status of every [[ApiError]] case except [[ApiError.Other]]. */
+  val apiErrorStatus: EndpointOutput.StatusCode[StatusCode] = {
+    List(
+      StatusCode.BadRequest -> "Bad request",
+      StatusCode.Unauthorized -> "Unauthorized",
+      StatusCode.Forbidden -> "Forbidden",
+      StatusCode.NotFound -> "Not found",
+      StatusCode.Conflict -> "Conflict",
+      StatusCode.UnprocessableEntity -> "Unprocessable entity",
+      StatusCode.TooManyRequests -> "Too many requests",
+      StatusCode.InternalServerError -> "Internal server error",
+      StatusCode.ServiceUnavailable -> "Service unavailable",
+    ).foldLeft(sttp.tapir.statusCode)((output, status) => output.description(status._1, status._2))
+  }
+
+  /** A JSON body from any Tapir JSON codec. */
+  def jsonBody[T](codec: Codec[String, T, CodecFormat.Json]): EndpointIO.Body[String, T] =
+    sttp.tapir.customCodecJsonBody[T](using codec)
+
+  /** A JSON body served / read with exactly the given media type (UTF-8). */
+  def jsonBody[T](codec: Codec[String, T, CodecFormat.Json], mediaType: String): EndpointIO.Body[String, T] =
+    sttp.tapir.stringBodyAnyFormat(codec.format(MediaFormat(mediaType)), StandardCharsets.UTF_8.nn)
+
+  /** A Tapir JSON codec from a jsoniter-scala codec: Okapi's default JSON support. */
+  def jsoniterCodec[T](codec: JsonValueCodec[T], schema: Schema[T]): Codec[String, T, CodecFormat.Json] =
+    sttp.tapir.json.jsoniter.jsoniterCodec[T](using codec, schema)
 
   def formBodyInput[T](codec: Codec[String, T, CodecFormat.XWwwFormUrlencoded]): EndpointIO.Body[String, T] =
     sttp.tapir.formBody[T](using codec)
 
   def formBodyOutput[T](codec: Codec[String, T, CodecFormat.XWwwFormUrlencoded]): EndpointOutput[T] =
-    sttp.tapir.formBody[T](using codec)
+    formBodyInput(codec)
 
   def multipartBodyInput[T](
-    codec: MultipartCodec[T],
+    codec: MultipartCodec[T]
   ): EndpointIO.Body[Seq[RawPart], T] =
     sttp.tapir.multipartBody[T](using codec)
 
-  def xmlStringBody: EndpointIO.Body[String, String] =
-    sttp.tapir.stringBodyAnyFormat(
-      Codec.id[String, CodecFormat.Xml](CodecFormat.Xml(), Schema.string),
-      java.nio.charset.StandardCharsets.UTF_8.nn,
+  /** A `String` body served / read with exactly the given media type (UTF-8). */
+  def textBody(mediaType: String): EndpointIO.Body[String, String] =
+    sttp.tapir.stringBodyAnyFormat(Codec.id(MediaFormat(mediaType), Schema.string), StandardCharsets.UTF_8.nn)
+
+  /** An `Array[Byte]` body served / read with exactly the given media type. */
+  def binaryBody(mediaType: String): EndpointIO.Body[Array[Byte], Array[Byte]] = {
+    EndpointIO.Body(
+      RawBodyType.ByteArrayBody,
+      Codec.id(MediaFormat(mediaType), Schema.schemaForByteArray),
+      EndpointIO.Info.empty,
     )
+  }
 
-  def jsStringBody: EndpointIO.Body[String, String] =
-    sttp.tapir.stringBodyAnyFormat(
-      Codec.id[String, CodecFormat.TextJavascript](CodecFormat.TextJavascript(), Schema.string),
-      java.nio.charset.StandardCharsets.UTF_8.nn,
-    )
+  /** Codec format for a media type; the `String` overload throws on an unparsable media type. */
+  final case class MediaFormat(mediaType: MediaType) extends CodecFormat
 
-  def eventStreamBody: EndpointIO.Body[String, String] =
-    sttp.tapir.stringBodyAnyFormat(
-      Codec.id[String, CodecFormat.TextEventStream](CodecFormat.TextEventStream(), Schema.string),
-      java.nio.charset.StandardCharsets.UTF_8.nn,
-    )
+  object MediaFormat {
+    def apply(mediaType: String): MediaFormat = MediaFormat(MediaType.unsafeParse(mediaType))
+  }
 
-  def attachServerLogic[T, I, E, O](
-    endpoint: Endpoint[Unit, I, E, O, Any],
-    logic: I => ZIO[T, E, O],
-  ): ZServerEndpoint[T, sttp.capabilities.WebSockets] =
-    endpoint.zServerLogic(logic).asInstanceOf[ZServerEndpoint[T, sttp.capabilities.WebSockets]]
+  def attachServerLogic[G[_], I, E, O, EC, R](
+    endpoint: Endpoint[Unit, I, E, O, EC],
+    logic: I => G[Either[E, O]],
+  ): ServerEndpoint[R, G] =
+    endpoint.serverLogic[G](logic).asInstanceOf[ServerEndpoint[R, G]]
 
-  def attachWsServerLogic[T, I, E, In, Out](
-    endpoint: Endpoint[Unit, I, E, ZStream[Any, Throwable, In] => ZStream[Any, Throwable, Out], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets],
-    logic: I => ZIO[T, E, ZStream[Any, Throwable, In] => ZStream[Any, Throwable, Out]],
-  ): ZServerEndpoint[T, sttp.capabilities.WebSockets] =
-    endpoint.zServerLogic(logic).asInstanceOf[ZServerEndpoint[T, sttp.capabilities.WebSockets]]
+  type ErrorOut = (sttp.model.StatusCode, ApiErrorResponse)
 
-  private def textWsBody =
-    sttp.tapir.ztapir.webSocketBody[String, CodecFormat.TextPlain, String, CodecFormat.TextPlain](sttp.capabilities.zio.ZioStreams)
+  /** Runs a controller call through its host and maps an [[ApiError]] to [[ErrorOut]]. */
+  def serve[C, F[_], G[_], A](host: ControllerHost[C, F, G], call: C => F[A]): G[Either[ErrorOut, A]] =
+    host.monad.map(host.run(call))(_.left.map(toErrorOut))
 
-  private def binaryWsBody =
-    sttp.tapir.ztapir.webSocketBody[Array[Byte], CodecFormat.OctetStream, Array[Byte], CodecFormat.OctetStream](sttp.capabilities.zio.ZioStreams)
+  /** Like [[serve]], splitting a [[FileResponse]] into body bytes and a `Content-Disposition` header. */
+  def serveFile[C, F[_], G[_]](
+    host: ControllerHost[C, F, G],
+    call: C => F[FileResponse],
+  ): G[Either[ErrorOut, (Array[Byte], String)]] =
+    host.monad.map(host.run(call))(_.left.map(toErrorOut).map(fileParts))
 
-  def addTextWsOutput[S, I, E](
-    endpoint: Endpoint[S, I, E, Unit, Any],
-  ): Endpoint[S, I, E, WsPipe[String, String], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets] =
-    endpoint.out(textWsBody)
-      .asInstanceOf[Endpoint[S, I, E, WsPipe[String, String], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets]]
+  def pure[C, F[_], G[_], A](host: ControllerHost[C, F, G], value: => A): F[A] =
+    host.effect.pure(value)
 
-  def addBinaryWsOutput[S, I, E](
-    endpoint: Endpoint[S, I, E, Unit, Any],
-  ): Endpoint[S, I, E, WsPipe[Array[Byte], Array[Byte]], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets] =
-    endpoint.out(binaryWsBody)
-      .asInstanceOf[Endpoint[S, I, E, WsPipe[Array[Byte], Array[Byte]], sttp.capabilities.zio.ZioStreams & sttp.capabilities.WebSockets]]
+  private def toErrorOut(error: ApiError): ErrorOut = (error.status, ApiError.toResponse(error))
 
-  def mapFileResponseApiError[R](
-    effect: ZIO[R, ApiError, FileResponse],
-  ): ZIO[R, (sttp.model.StatusCode, ApiErrorResponse), (Array[Byte], String)] =
-    effect
-      .map(fr => (fr.data, s"""attachment; filename="${fr.filename}""""))
-      .mapError(e => (e.status, ApiError.toResponse(e)))
+  private def fileParts(file: FileResponse): (Array[Byte], String) =
+    (file.data, contentDisposition(file.filename))
 
-  def liftPure[A](value: A): ZIO[Any, Nothing, A] =
-    ZIO.succeed(value)
+  private def contentDisposition(filename: String): String = {
+    val ascii = filename.iterator.map(c => if c >= ' ' && c <= '~' && c != '"' && c != '\\' then c else '_').mkString
+    val attachment = s"""attachment; filename="$ascii""""
+    if filename.forall(_.toInt < 0x80) then attachment
+    else s"$attachment; filename*=UTF-8''${percentEncode(filename)}"
+  }
+
+  /** RFC 8187 `value-chars`: UTF-8 bytes, each outside `attr-char` as `%XX`. */
+  private def percentEncode(value: String): String = {
+    value
+      .getBytes(StandardCharsets.UTF_8)
+      .nn
+      .map { byte =>
+        val c = (byte & 0xff).toChar
+        val attrChar = c.isLetterOrDigit && c <= '~' || "!#$&+-.^_`|~".contains(c)
+        if attrChar then c.toString else f"%%${byte & 0xff}%02X"
+      }
+      .mkString
+  }
 }

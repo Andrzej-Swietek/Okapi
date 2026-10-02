@@ -1,46 +1,19 @@
-ThisBuild / scalaVersion := "3.6.4"
+import OkapiBuild.*
 
-val zioVersion = "2.1.16"
-val zioHttpVersion = "3.2.0"
-val zioJsonVersion = "0.7.43"
-val tapirVersion = "1.11.29"
-val zioLoggingVersion = "2.5.0"
+name := "okapi-core"
+description := "Okapi core: effect-agnostic, annotation-driven Tapir endpoints powered by Scala 3 macros."
 
-lazy val core = (project in file("."))
-  .settings(
-    name := "core",
-    libraryDependencies ++= Seq(
-      "dev.zio" %% "zio" % zioVersion,
-      "dev.zio" %% "zio-http" % zioHttpVersion,
-      "dev.zio" %% "zio-json" % zioJsonVersion,
-      "dev.zio" %% "zio-logging" % zioLoggingVersion,
-      "dev.zio" %% "zio-logging-slf4j" % zioLoggingVersion,
-      "com.softwaremill.sttp.tapir" %% "tapir-core" % tapirVersion,
-      "com.softwaremill.sttp.tapir" %% "tapir-zio" % tapirVersion,
-      "com.softwaremill.sttp.tapir" %% "tapir-zio-http-server" % tapirVersion,
-      "com.softwaremill.sttp.tapir" %% "tapir-json-zio" % tapirVersion,
-      "com.softwaremill.sttp.tapir" %% "tapir-swagger-ui-bundle" % tapirVersion,
-      "dev.zio" %% "zio-test" % zioVersion % Test,
-      "dev.zio" %% "zio-test-sbt" % zioVersion % Test,
-      "dev.zio" %% "zio-test-junit" % zioVersion % Test,
-      "dev.zio" %% "zio-test-magnolia" % zioVersion % Test,
-    ),
-    testFrameworks := Seq(new TestFramework("zio.test.sbt.ZTestFramework")),
-    scalacOptions ++= Seq(
-      "-Xmax-inlines:128",
-      "-Yexplicit-nulls",
-      "-Yno-flexible-types",
-      "-Wsafe-init",
-      "-Wunused:all",
-      "-Wnonunit-statement",
-      "-explain",
-      "-explain-types",
-      "-no-indent",
-    ),
-    Compile / doc / sources := Seq.empty,
-    externalResolvers ++= Seq(
-      Resolver.defaultLocal
-    ),
-  )
+// JSON: jsoniter-scala by default; any Tapir JSON integration in scope takes precedence (see "JSON" in OKAPI.md)
+libraryDependencies ++= Seq(
+  "com.softwaremill.sttp.tapir" %% "tapir-core" % V.tapir,
+  "com.softwaremill.sttp.tapir" %% "tapir-jsoniter-scala" % V.tapir,
+  // `derives JsoniterCodec` expands JsonCodecMaker in user code, so the macros are a regular dependency
+  "com.github.plokhotnyuk.jsoniter-scala" %% "jsoniter-scala-macros" % V.jsoniter,
+  // tests also exercise swapping in another integration
+  "com.softwaremill.sttp.tapir" %% "tapir-json-zio" % V.tapir % Test,
+)
 
-addCommandAlias("fmt", "all scalafmtSbt scalafmtAll")
+compilerSettings
+zioJsonScheme
+zioTestSettings
+publishSettings

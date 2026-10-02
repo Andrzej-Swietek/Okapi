@@ -45,3 +45,8 @@ build/
 
 ### Scala ###
 .bsp/
+
+### Code review artifacts ###
+.reviews/
+### sbt sub-builds created by IDEs ###
+core/project/
