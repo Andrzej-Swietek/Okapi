@@ -1,4 +1,4 @@
-name := "okapi-example-client"
+name := "example-client"
 scalaVersion := "3.6.4"
 
 libraryDependencies ++= Seq(
@@ -8,3 +8,5 @@ libraryDependencies ++= Seq(
   "com.github.plokhotnyuk.jsoniter-scala" %% "jsoniter-scala-macros" % "2.41.2",
   "com.softwaremill.sttp.shared" %% "zio" % "1.5.2",
 )
+
+Compile / mainClass := Some("io.okapi.exampleclient.Main")

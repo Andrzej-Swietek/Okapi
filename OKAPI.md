@@ -509,6 +509,9 @@ responses come back as `Left(ApiErrorResponse(...))`. The same `openapi.yaml` fe
 other languages. Run `okapiGenerateClient` and the client module's compilation in separate sbt sessions, since sbt
 reads the generated `build.sbt` on start.
 
+`example-client/` is generated this way from `okapi-example/` (`sbt okapiGenerateClient` there), plus a `Main`
+calling the running example: `cd okapi-example && sbt run`, then `cd example-client && sbt run`.
+
 ---
 
 ## Upgrading from 0.1.x

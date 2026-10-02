@@ -1,7 +1,7 @@
 
-package okapiexample.client
+package io.okapi.exampleclient.api
 
-object OkapiExampleEndpoints {
+object ExampleApi {
 
   import sttp.tapir._
   import sttp.tapir.model._
@@ -10,8 +10,8 @@ object OkapiExampleEndpoints {
   import com.github.plokhotnyuk.jsoniter_scala.macros._
   import com.github.plokhotnyuk.jsoniter_scala.core._
   
-  import okapiexample.client.OkapiExampleEndpointsJsonSerdes._
-  import OkapiExampleEndpointsSchemas._
+  import io.okapi.exampleclient.api.ExampleApiJsonSerdes._
+  import ExampleApiSchemas._
 
 
   

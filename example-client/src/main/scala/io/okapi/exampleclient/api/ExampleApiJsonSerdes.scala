@@ -1,7 +1,7 @@
-package okapiexample.client
+package io.okapi.exampleclient.api
 
-object OkapiExampleEndpointsJsonSerdes {
-  import okapiexample.client.OkapiExampleEndpoints._
+object ExampleApiJsonSerdes {
+  import io.okapi.exampleclient.api.ExampleApi._
   import sttp.tapir.generic.auto._
   implicit val byteStringJsonCodec: com.github.plokhotnyuk.jsoniter_scala.core.JsonValueCodec[ByteString] = new com.github.plokhotnyuk.jsoniter_scala.core.JsonValueCodec[ByteString] {
     def nullValue: ByteString = Array.empty[Byte]

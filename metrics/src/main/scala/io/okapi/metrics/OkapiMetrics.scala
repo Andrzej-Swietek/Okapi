@@ -13,15 +13,23 @@ import sttp.tapir.server.metrics.{ EndpointMetric, Metric }
   * @param controller
   *   the controller's tag (`@Tag` / `@ApiTag`, else its class name)
   */
-final case class RequestRecord(method: String, path: String, controller: String, status: Int, duration: Duration)
+final case class RequestRecord(
+  method: String,
+  path: String,
+  controller: String,
+  status: Int,
+  duration: Duration,
+)
 
 object OkapiMetrics {
 
   /** Calls `record` once per request that matched an endpoint, when its response body is complete; a failure of the
     * server logic is recorded with status 500. Add it to the server options with `metricsInterceptor`.
     */
-  def interceptor[F[_]](record: RequestRecord => F[Unit], clock: Clock = Clock.systemUTC().nn)
-    : MetricsRequestInterceptor[F] =
+  def interceptor[F[_]](
+    record: RequestRecord => F[Unit],
+    clock: Clock = Clock.systemUTC().nn,
+  ): MetricsRequestInterceptor[F] =
     new MetricsRequestInterceptor[F](List(metric(record, clock)), Seq.empty)
 
   private def metric[F[_]](record: RequestRecord => F[Unit], clock: Clock): Metric[F, Unit] = {

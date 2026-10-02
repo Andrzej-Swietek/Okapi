@@ -1,8 +1,8 @@
-package okapiexample.client
+package io.okapi.exampleclient.api
 
 
-object OkapiExampleEndpointsSchemas {
-  import okapiexample.client.OkapiExampleEndpoints._
+object ExampleApiSchemas {
+  import io.okapi.exampleclient.api.ExampleApi._
   import sttp.tapir.generic.auto._
   implicit lazy val byteStringSchema: sttp.tapir.Schema[ByteString] = sttp.tapir.Schema.schemaForByteArray.map(ba => Some(toByteString(ba)))(bs => bs)
   implicit lazy val apiErrorResponseTapirSchema: sttp.tapir.Schema[ApiErrorResponse] = sttp.tapir.Schema.derived
