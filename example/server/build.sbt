@@ -2,7 +2,7 @@ ThisBuild / organization := "io.okapi.example"
 ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "3.6.4"
 
-val okapiVersion = "0.2.0-SNAPSHOT"
+val okapiVersion = "0.2.0"
 val zioVersion = "2.1.26"
 val zioHttpVersion = "3.11.6"
 val zioJsonVersion = "1.0.0"

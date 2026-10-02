@@ -1,5 +1,5 @@
 ThisBuild / organization := "io.github.andrzej-swietek"
-ThisBuild / version := "0.2.0-SNAPSHOT"
+ThisBuild / version := "0.2.0"
 ThisBuild / versionScheme := Some("early-semver")
 ThisBuild / scalaVersion := "3.6.4"
 
